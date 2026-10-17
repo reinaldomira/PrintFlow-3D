@@ -60,9 +60,8 @@ O PrintFlow é um **Progressive Web App (PWA)**, o que significa que você pode 
    ```
    https://ais-pre-6o6ifmeubqtiwkgfnzqd2b-87898554493.us-east1.run.app
    ```
-2. Toque no botão verde **"Instalar App"** na parte superior da tela ou abra o menu do Chrome (três pontinhos no canto superior direito).
-3. Selecione **"Instalar aplicativo"** (ou **"Adicionar à tela inicial"**).
-4. O ícone do PrintFlow será adicionado à sua tela inicial.
+2. Você pode instalar acessando a aba **Ajustes** e tocando em **"Instalar no Dispositivo"**, ou direto pelo menu do Chrome (três pontinhos no canto superior direito) > **"Instalar aplicativo"** (ou **"Adicionar à tela inicial"**).
+3. O ícone do PrintFlow será adicionado à sua tela inicial com carregamento instantâneo.
 
 #### No iPhone / iPad (Safari):
 1. Abra a URL do app no Safari.

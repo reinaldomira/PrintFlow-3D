@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { NAVIGATION_ITEMS } from '../constants';
 import { Menu, X, ChevronRight } from 'lucide-react';
-import { PWAInstallButton } from './PWAInstallButton';
 
 const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const location = useLocation();
@@ -45,11 +44,6 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             </Link>
           ))}
         </nav>
-
-        {/* Desktop PWA Install Box */}
-        <div className="pt-4 border-t border-zinc-800/80">
-          <PWAInstallButton variant="card" />
-        </div>
       </aside>
 
       {/* Top bar for mobile */}
@@ -60,11 +54,8 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
           </div>
           <h1 className="font-bold">PrintFlow</h1>
         </div>
-        <div className="flex items-center gap-2">
-          <PWAInstallButton variant="header" />
-          <div className="text-[10px] bg-zinc-900 px-2 py-1 rounded border border-zinc-800 text-zinc-500 font-bold uppercase">
-            v2.1
-          </div>
+        <div className="text-[10px] bg-zinc-900 px-2 py-1 rounded border border-zinc-800 text-zinc-500 font-bold uppercase">
+          v2.1
         </div>
       </header>
 
@@ -92,11 +83,6 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
               >
                 <X className="w-6 h-6" />
               </button>
-            </div>
-
-            {/* PWA Direct install button in mobile drawer */}
-            <div className="mb-6">
-              <PWAInstallButton variant="menu" />
             </div>
 
             <div className="grid grid-cols-2 gap-3">
