@@ -1,0 +1,8 @@
+{
+  "name": "PrintFlow - 3D Sales Manager",
+  "description": "A complete management system for 3D printing businesses with cost calculators, customer tracking, and visual sales reports.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": []
+}

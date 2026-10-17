@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGradMask" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#09090b"/>
+      <stop offset="100%" stop-color="#18181b"/>
+    </linearGradient>
+    <linearGradient id="emeraldGradMask" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Full-bleed background for maskable (no rounded corners, no transparent gaps) -->
+  <rect width="512" height="512" fill="url(#bgGradMask)"/>
+
+  <!-- Centered Graphic within the 80% safe zone (center 400x400) -->
+  <g transform="translate(256, 215) scale(0.85)">
+    <!-- Top Face of Isometric Cube -->
+    <polygon points="0,-100 90,-50 0,0 -90,-50" fill="url(#emeraldGradMask)"/>
+    
+    <!-- Left Face -->
+    <polygon points="-90,-50 0,0 0,105 -90,55" fill="#047857"/>
+    
+    <!-- Right Face -->
+    <polygon points="0,0 90,-50 90,55 0,105" fill="#065f46"/>
+
+    <!-- 3D Print Layer Lines (Left) -->
+    <line x1="-90" y1="-15" x2="0" y2="35" stroke="#10b981" stroke-width="3" opacity="0.6"/>
+    <line x1="-90" y1="20" x2="0" y2="70" stroke="#10b981" stroke-width="3" opacity="0.6"/>
+
+    <!-- 3D Print Layer Lines (Right) -->
+    <line x1="0" y1="35" x2="90" y2="-15" stroke="#34d399" stroke-width="3" opacity="0.6"/>
+    <line x1="0" y1="70" x2="90" y2="20" stroke="#34d399" stroke-width="3" opacity="0.6"/>
+
+    <!-- Extruder Nozzle above cube -->
+    <path d="M -24,-150 L 24,-150 L 16,-120 L 4,-108 L -4,-108 L -16,-120 Z" fill="#f4f4f5"/>
+    <line x1="0" y1="-180" x2="0" y2="-150" stroke="#34d399" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="0" cy="-105" r="4" fill="#6ee7b7"/>
+  </g>
+
+  <!-- Brand Monogram/Text within safe zone -->
+  <text x="256" y="380" font-family="'Inter', sans-serif" font-weight="900" font-size="42" fill="#ffffff" text-anchor="middle" letter-spacing="2">PRINTFLOW</text>
+  <text x="256" y="415" font-family="'Inter', sans-serif" font-weight="700" font-size="20" fill="#10b981" text-anchor="middle" letter-spacing="4">3D</text>
+</svg>
