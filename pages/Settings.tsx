@@ -91,6 +91,24 @@ CREATE TABLE IF NOT EXISTS public.settings (
     "filamentBrands" text[] DEFAULT ARRAY['3D Prime', 'Creality'],
     categories text[] DEFAULT ARRAY['Chaveiro', 'Organizador', 'Decoração']
 );
+
+-- 6. TABELA CLIENTES
+CREATE TABLE IF NOT EXISTS public.customers (
+    id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id uuid REFERENCES auth.users(id),
+    name text NOT NULL,
+    phone text NOT NULL,
+    email text,
+    notes text,
+    "createdAt" timestamptz DEFAULT now()
+);
+
+-- GARANTIA DE COLUNAS ADICIONAIS
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS discount numeric DEFAULT 0;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS "paymentMethod" text DEFAULT 'Pix';
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS payments jsonb DEFAULT '[]'::jsonb;
+ALTER TABLE public.parts ADD COLUMN IF NOT EXISTS "printerId" text;
+ALTER TABLE public.parts ADD COLUMN IF NOT EXISTS "postProcessingTime" numeric DEFAULT 0;
 `.trim();
 
   const handleUpdate = (key: keyof typeof settings, value: any) => {

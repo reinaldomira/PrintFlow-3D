@@ -1,16 +1,16 @@
-
 import React, { useState, useMemo, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import { Part, PartRecipeItem } from '../types';
 import { supabase } from '../services/supabase';
 import { MATERIALS, calculatePartCosts, formatCurrency } from '../constants';
-import { Plus, Search, Trash2, Edit2, Upload, X, Layers, Image as ImageIcon, Loader2, PlusCircle, Camera } from 'lucide-react';
+import { Plus, Search, Trash2, Edit2, Upload, X, Layers, Image as ImageIcon, Loader2, PlusCircle, Camera, Monitor, Clock, Zap } from 'lucide-react';
 
 const Catalog: React.FC = () => {
   const { parts, settings, filaments, printers, user, refreshData } = useApp();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [imageNotice, setImageNotice] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [editingPart, setEditingPart] = useState<Partial<Part> | null>(null);
 
@@ -19,22 +19,26 @@ const Catalog: React.FC = () => {
     return calculatePartCosts(editingPart, filaments, printers, settings);
   }, [editingPart, filaments, printers, settings]);
 
-  const compressImage = (file: File): Promise<Blob> => {
+  const compressImage = (file: File): Promise<{ blob: Blob; dataUrl: string }> => {
     return new Promise((resolve) => {
       const reader = new FileReader();
       reader.readAsDataURL(file);
       reader.onload = (event) => {
+        const dataUrlOriginal = event.target?.result as string;
         const img = new Image();
-        img.src = event.target?.result as string;
+        img.src = dataUrlOriginal;
         img.onload = () => {
           const canvas = document.createElement('canvas');
           const MAX_WIDTH = 800;
-          const scaleSize = MAX_WIDTH / img.width;
-          canvas.width = MAX_WIDTH;
+          const scaleSize = Math.min(1, MAX_WIDTH / img.width);
+          canvas.width = img.width * scaleSize;
           canvas.height = img.height * scaleSize;
           const ctx = canvas.getContext('2d');
           ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
-          canvas.toBlob((blob) => resolve(blob!), 'image/jpeg', 0.8);
+          const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.82);
+          canvas.toBlob((blob) => {
+            resolve({ blob: blob || file, dataUrl: compressedDataUrl });
+          }, 'image/jpeg', 0.82);
         };
       };
     });
@@ -44,25 +48,38 @@ const Catalog: React.FC = () => {
     const file = e.target.files?.[0];
     if (file && user) {
       setIsSaving(true);
+      setImageNotice(null);
       try {
-        const compressedBlob = await compressImage(file);
+        const { blob: compressedBlob, dataUrl } = await compressImage(file);
         const fileName = `${user.id}/${Date.now()}.jpg`;
         
-        // USANDO O NOME EXATO DO SEU BUCKET: PARTS-IMAGES
-        const { data, error } = await supabase.storage
-          .from('PARTS-IMAGES')
-          .upload(fileName, compressedBlob, {
-            contentType: 'image/jpeg',
-            upsert: true
-          });
+        let uploadedUrl: string | null = null;
+        try {
+          const { data, error } = await supabase.storage
+            .from('PARTS-IMAGES')
+            .upload(fileName, compressedBlob, {
+              contentType: 'image/jpeg',
+              upsert: true
+            });
 
-        if (error) throw error;
+          if (!error && data?.path) {
+            const { data: { publicUrl } } = supabase.storage.from('PARTS-IMAGES').getPublicUrl(data.path);
+            uploadedUrl = publicUrl;
+          }
+        } catch (storageErr) {
+          console.warn('Storage bucket indisponível, usando fallback seguro:', storageErr);
+        }
 
-        const { data: { publicUrl } } = supabase.storage.from('PARTS-IMAGES').getPublicUrl(data.path);
-        updateField('imageUrl', publicUrl);
+        // Fallback: se o bucket não estiver configurado no Supabase, usa dataUrl otimizado
+        if (uploadedUrl) {
+          updateField('imageUrl', uploadedUrl);
+        } else {
+          updateField('imageUrl', dataUrl);
+          setImageNotice('Foto salva no cadastro. Para salvar no Storage da nuvem, crie o bucket PARTS-IMAGES como público.');
+        }
       } catch (err: any) {
-        console.error('Erro upload:', err);
-        alert('Erro no upload: ' + err.message);
+        console.error('Erro processando foto:', err);
+        alert('Erro ao carregar foto: ' + err.message);
       } finally {
         setIsSaving(false);
       }
@@ -75,6 +92,8 @@ const Catalog: React.FC = () => {
     setIsSaving(true);
     
     try {
+      const calculated = calculatePartCosts(editingPart, filaments, printers, settings);
+
       const payload: any = { 
         user_id: user.id,
         name: editingPart.name,
@@ -82,6 +101,10 @@ const Catalog: React.FC = () => {
         material: editingPart.material || 'PLA',
         weight: Number(editingPart.weight) || 0,
         printTime: Number(editingPart.printTime) || 0,
+        postProcessingTime: Number(editingPart.postProcessingTime) || 0,
+        printerId: editingPart.printerId || null,
+        filamentCost: calculated.materialCost,
+        energyCost: calculated.energyCost,
         wastePercent: Number(editingPart.wastePercent) || 5,
         profitMargin: Number(editingPart.profitMargin) || settings.defaultProfitMargin,
         recipe: editingPart.recipe || [],
@@ -102,6 +125,7 @@ const Catalog: React.FC = () => {
       await refreshData();
       setIsModalOpen(false);
       setEditingPart(null);
+      setImageNotice(null);
     } catch (err: any) {
       console.error('Erro salvar peça:', err);
       alert('Erro ao salvar: ' + (err.message || 'Erro desconhecido. Verifique o Script SQL.'));
@@ -129,7 +153,7 @@ const Catalog: React.FC = () => {
   };
 
   const addRecipeItem = () => {
-    if (filaments.length === 0) return alert("Cadastre filamentos primeiro.");
+    if (filaments.length === 0) return alert("Cadastre filamentos primeiro na aba Filamentos.");
     const currentRecipe = editingPart?.recipe || [];
     updateField('recipe', [...currentRecipe, { filamentId: filaments[0].id, grams: 0 }]);
   };
@@ -146,7 +170,7 @@ const Catalog: React.FC = () => {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold">Catálogo</h2>
-          <p className="text-zinc-500">{parts.length} modelos</p>
+          <p className="text-zinc-500">{parts.length} modelos cadastrados</p>
         </div>
         <button 
           onClick={() => { 
@@ -157,12 +181,15 @@ const Catalog: React.FC = () => {
               weight: 0, 
               recipe: [], 
               printTime: 0, 
+              postProcessingTime: 0,
+              printerId: printers[0]?.id || '',
               wastePercent: 5,
               profitMargin: settings.defaultProfitMargin
             }); 
+            setImageNotice(null);
             setIsModalOpen(true); 
           }}
-          className="bg-emerald-500 text-zinc-950 px-4 py-2 rounded-xl flex items-center gap-2 font-bold shadow-lg shadow-emerald-500/20 active:scale-95 transition-all"
+          className="bg-emerald-500 hover:bg-emerald-400 text-zinc-950 px-4 py-2 rounded-xl flex items-center gap-2 font-bold shadow-lg shadow-emerald-500/20 active:scale-95 transition-all"
         >
           <Plus className="w-5 h-5" /> Nova Peça
         </button>
@@ -175,28 +202,42 @@ const Catalog: React.FC = () => {
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
-        {parts.filter(p => p.name.toLowerCase().includes(searchTerm.toLowerCase())).map(part => (
-          <div key={part.id} className="bg-zinc-900 rounded-2xl border border-zinc-800 overflow-hidden group hover:border-emerald-500/50 transition-colors flex flex-col">
-            <div className="aspect-square relative bg-zinc-800 overflow-hidden">
-              {part.imageUrl ? (
-                <img src={part.imageUrl} className="w-full h-full object-cover transition-transform group-hover:scale-110" loading="lazy" />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center text-zinc-700"><ImageIcon className="w-10 h-10" /></div>
-              )}
-              <div className="absolute top-2 right-2 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-all translate-x-2 group-hover:translate-x-0">
-                <button onClick={() => { setEditingPart(part); setIsModalOpen(true); }} className="p-2 bg-zinc-950/80 rounded-full text-zinc-100 hover:bg-emerald-500 hover:text-zinc-950"><Edit2 className="w-4 h-4" /></button>
-                <button onClick={() => deletePart(part.id)} className="p-2 bg-zinc-950/80 rounded-full text-red-500 hover:bg-red-500 hover:text-white"><Trash2 className="w-4 h-4" /></button>
+        {parts.filter(p => p.name.toLowerCase().includes(searchTerm.toLowerCase())).map(part => {
+          const partCostInfo = calculatePartCosts(part, filaments, printers, settings);
+          const selectedPrinter = printers.find(pr => pr.id === part.printerId);
+          return (
+            <div key={part.id} className="bg-zinc-900 rounded-2xl border border-zinc-800 overflow-hidden group hover:border-emerald-500/50 transition-colors flex flex-col">
+              <div className="aspect-square relative bg-zinc-800 overflow-hidden">
+                {part.imageUrl ? (
+                  <img src={part.imageUrl} className="w-full h-full object-cover transition-transform group-hover:scale-110" loading="lazy" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-zinc-700"><ImageIcon className="w-10 h-10" /></div>
+                )}
+                <div className="absolute top-2 right-2 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-all translate-x-2 group-hover:translate-x-0">
+                  <button onClick={() => { setEditingPart(part); setImageNotice(null); setIsModalOpen(true); }} className="p-2 bg-zinc-950/80 rounded-full text-zinc-100 hover:bg-emerald-500 hover:text-zinc-950"><Edit2 className="w-4 h-4" /></button>
+                  <button onClick={() => deletePart(part.id)} className="p-2 bg-zinc-950/80 rounded-full text-red-500 hover:bg-red-500 hover:text-white"><Trash2 className="w-4 h-4" /></button>
+                </div>
+              </div>
+              <div className="p-4 flex-1 text-center sm:text-left flex flex-col justify-between">
+                <div>
+                  <h3 className="font-bold text-sm truncate text-zinc-200">{part.name}</h3>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="text-[10px] uppercase font-bold text-zinc-500">{part.category}</span>
+                    {selectedPrinter && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono">
+                        {selectedPrinter.model}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="mt-3 pt-2 border-t border-zinc-800/60 flex items-center justify-between">
+                  <span className="text-[10px] text-zinc-500">{part.weight}g</span>
+                  <p className="text-emerald-500 font-black text-sm">{formatCurrency(partCostInfo.suggestedPrice)}</p>
+                </div>
               </div>
             </div>
-            <div className="p-4 flex-1 text-center sm:text-left">
-              <h3 className="font-bold text-sm truncate text-zinc-200">{part.name}</h3>
-              <div className="flex justify-between items-center mt-2 flex-col sm:flex-row gap-1">
-                <span className="text-[10px] uppercase font-bold text-zinc-500">{part.category}</span>
-                <p className="text-emerald-500 font-black text-sm">{formatCurrency(calculatePartCosts(part, filaments, printers, settings).suggestedPrice)}</p>
-              </div>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {isModalOpen && (
@@ -208,6 +249,12 @@ const Catalog: React.FC = () => {
             </div>
             
             <form onSubmit={handleSavePart} className="p-6 space-y-6">
+              {imageNotice && (
+                <div className="p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl text-xs text-blue-400">
+                  {imageNotice}
+                </div>
+              )}
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {/* Foto Section */}
                 <div 
@@ -244,6 +291,7 @@ const Catalog: React.FC = () => {
                     <input required className="w-full bg-zinc-800 p-4 rounded-xl outline-none border border-zinc-700 font-bold focus:border-emerald-500"
                       value={editingPart?.name || ''} onChange={e => updateField('name', e.target.value)} />
                   </div>
+                  
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="text-[10px] font-black uppercase text-zinc-500 mb-2 block">Categoria</label>
@@ -260,6 +308,26 @@ const Catalog: React.FC = () => {
                       </select>
                     </div>
                   </div>
+
+                  {/* Impressora Vinculada */}
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-zinc-500 mb-2 flex items-center gap-1.5">
+                      <Monitor className="w-3.5 h-3.5 text-emerald-500" />
+                      Impressora para Cálculo de Energia
+                    </label>
+                    <select 
+                      className="w-full bg-zinc-800 p-4 rounded-xl outline-none border border-zinc-700 font-bold text-sm"
+                      value={editingPart?.printerId || ''} 
+                      onChange={e => updateField('printerId', e.target.value)}
+                    >
+                      <option value="">Padrão do Sistema (350W)</option>
+                      {printers.map(printer => (
+                        <option key={printer.id} value={printer.id}>
+                          {printer.brand} {printer.model} ({printer.power}W)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               </div>
 
@@ -271,12 +339,14 @@ const Catalog: React.FC = () => {
                     <h4 className="font-black uppercase text-[10px] tracking-widest">Composição de Filamentos</h4>
                   </div>
                   <button type="button" onClick={addRecipeItem} className="text-emerald-500 font-bold text-[10px] uppercase hover:underline flex items-center gap-1.5">
-                    <PlusCircle className="w-3.5 h-3.5" /> Adicionar
+                    <PlusCircle className="w-3.5 h-3.5" /> Adicionar Cor/Material
                   </button>
                 </div>
 
                 {(!editingPart?.recipe || editingPart.recipe.length === 0) ? (
-                  <p className="text-zinc-600 text-[10px] font-bold uppercase text-center py-2 italic">Nenhum filamento vinculado.</p>
+                  <p className="text-zinc-600 text-[10px] font-bold uppercase text-center py-2 italic">
+                    Nenhum filamento específico vinculado (calculado com preço padrão de R${settings.defaultFilamentCost}/kg).
+                  </p>
                 ) : (
                   <div className="space-y-3">
                     {editingPart.recipe.map((item, idx) => (
@@ -286,7 +356,7 @@ const Catalog: React.FC = () => {
                           value={item.filamentId} 
                           onChange={e => updateRecipeItem(idx, 'filamentId', e.target.value)}
                         >
-                          {filaments.map(f => <option key={f.id} value={f.id}>{f.colorName} ({f.brand})</option>)}
+                          {filaments.map(f => <option key={f.id} value={f.id}>{f.colorName} ({f.brand} - {f.material})</option>)}
                         </select>
                         <div className="flex items-center gap-1">
                           <input type="number" placeholder="g" className="w-14 bg-zinc-800 p-2 rounded-lg text-xs font-black border-none text-right outline-none" 
@@ -300,44 +370,61 @@ const Catalog: React.FC = () => {
                 )}
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {/* Metricas de Custo */}
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                 <div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-800">
-                  <span className="text-[10px] font-black uppercase text-zinc-500 block mb-1">Peso (g)</span>
+                  <span className="text-[10px] font-black uppercase text-zinc-500 block mb-1">Peso Total (g)</span>
                   <input type="number" className={`bg-transparent w-full text-lg font-black outline-none ${editingPart?.recipe?.length ? 'text-emerald-500' : 'text-zinc-100'}`} 
                     readOnly={editingPart?.recipe?.length! > 0} 
                     value={editingPart?.weight || 0} onChange={e => updateField('weight', Number(e.target.value))} />
                 </div>
                 <div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-800">
-                  <span className="text-[10px] font-black uppercase text-zinc-500 block mb-1">Tempo (h)</span>
+                  <span className="text-[10px] font-black uppercase text-zinc-500 block mb-1">Impressão (h)</span>
                   <input type="number" step="0.1" className="bg-transparent w-full text-lg font-black outline-none" 
                     value={editingPart?.printTime || 0} onChange={e => updateField('printTime', Number(e.target.value))} />
+                </div>
+                <div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-800">
+                  <span className="text-[10px] font-black uppercase text-zinc-500 block mb-1 flex items-center gap-1">
+                    <Clock className="w-3 h-3 text-emerald-400" /> Mão de Obra (h)
+                  </span>
+                  <input type="number" step="0.1" placeholder="Ex: 0.5" className="bg-transparent w-full text-lg font-black outline-none text-emerald-400" 
+                    value={editingPart?.postProcessingTime || 0} onChange={e => updateField('postProcessingTime', Number(e.target.value))} />
                 </div>
                 <div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-800">
                   <span className="text-[10px] font-black uppercase text-zinc-500 block mb-1">Margem %</span>
                   <input type="number" className="bg-transparent w-full text-lg font-black outline-none" 
                     value={editingPart?.profitMargin || 0} onChange={e => updateField('profitMargin', Number(e.target.value))} />
                 </div>
-                <div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-800">
-                  <span className="text-[10px] font-black uppercase text-zinc-500 block mb-1">Perda %</span>
+                <div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-800 col-span-2 sm:col-span-1">
+                  <span className="text-[10px] font-black uppercase text-zinc-500 block mb-1">Perda / Falha %</span>
                   <input type="number" className="bg-transparent w-full text-lg font-black outline-none" 
                     value={editingPart?.wastePercent || 0} onChange={e => updateField('wastePercent', Number(e.target.value))} />
                 </div>
               </div>
 
+              {/* Detalhamento de Custos */}
               <div className="bg-zinc-950 p-5 rounded-2xl border border-zinc-800 space-y-3">
-                <div className="flex justify-between items-center text-xs font-bold text-zinc-500">
-                  <span>Custo Produção</span>
-                  <span>{formatCurrency(costs?.totalCost || 0)}</span>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs text-zinc-400 pb-3 border-b border-zinc-800">
+                  <div>Material: <span className="text-zinc-200 font-bold">{formatCurrency(costs?.materialCost || 0)}</span></div>
+                  <div>Energia: <span className="text-zinc-200 font-bold">{formatCurrency(costs?.energyCost || 0)}</span></div>
+                  <div>Mão de Obra: <span className="text-zinc-200 font-bold">{formatCurrency(costs?.laborCost || 0)}</span></div>
+                  <div>Manutenção: <span className="text-zinc-200 font-bold">{formatCurrency(costs?.maintenanceCost || 0)}</span></div>
                 </div>
-                <div className="flex justify-between items-center pt-3 border-t border-zinc-800">
-                  <span className="text-[10px] font-black uppercase text-zinc-300">Preço Sugerido</span>
-                  <span className="text-2xl font-black text-emerald-500">{formatCurrency(costs?.suggestedPrice || 0)}</span>
+
+                <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-2 pt-2">
+                  <div className="text-xs font-bold text-zinc-500">
+                    Custo Total de Produção: <span className="text-zinc-300 font-black text-sm">{formatCurrency(costs?.totalCost || 0)}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-black uppercase text-zinc-400">Preço Sugerido:</span>
+                    <span className="text-2xl font-black text-emerald-500">{formatCurrency(costs?.suggestedPrice || 0)}</span>
+                  </div>
                 </div>
               </div>
 
               <button 
                 type="submit" disabled={isSaving} 
-                className="w-full py-4 bg-emerald-500 hover:bg-emerald-600 text-zinc-950 font-black rounded-xl shadow-xl shadow-emerald-500/10 active:scale-[0.98] transition-all disabled:opacity-50"
+                className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black rounded-xl shadow-xl shadow-emerald-500/10 active:scale-[0.98] transition-all disabled:opacity-50"
               >
                 {isSaving ? <Loader2 className="animate-spin mx-auto" /> : 'SALVAR NO BANCO'}
               </button>

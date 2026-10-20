@@ -28,28 +28,48 @@ const Reports: React.FC = () => {
     return Object.values(stats).sort((a, b) => b.count - a.count).slice(0, 5);
   }, [orders, parts]);
 
-  // Export CSV function
-  const exportCSV = () => {
-    const headers = ['Data', 'Cliente', 'Valor', 'Status', 'Metodo Pagamento'];
+  // Export CSV function with UTF-8 BOM for Excel and mobile compatibility
+  const exportCSV = async () => {
+    const headers = ['Data', 'Cliente', 'Valor (R$)', 'Status', 'Metodo Pagamento'];
     const rows = orders.map(o => [
-      new Date(o.createdAt).toLocaleDateString(),
-      customers.find(c => c.id === o.customerId)?.name || 'N/A',
-      o.totalValue.toString(),
-      o.status,
-      o.paymentMethod
+      new Date(o.createdAt).toLocaleDateString('pt-BR'),
+      `"${(customers.find(c => c.id === o.customerId)?.name || 'Cliente Removido').replace(/"/g, '""')}"`,
+      o.totalValue.toFixed(2).replace('.', ','),
+      `"${o.status}"`,
+      `"${o.paymentMethod || 'Pix'}"`
     ]);
 
-    const csvContent = "data:text/csv;charset=utf-8," 
-      + [headers, ...rows].map(e => e.join(",")).join("\n");
-    
-    const encodedUri = encodeURI(csvContent);
+    const csvString = '\uFEFF' + [headers.join(';'), ...rows.map(r => r.join(';'))].join('\r\n');
+    const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+    const filename = `printflow_vendas_${new Date().toISOString().split('T')[0]}.csv`;
+
+    // Try Web Share API for mobile if supported
+    if (navigator.canShare && typeof File !== 'undefined') {
+      try {
+        const file = new File([blob], filename, { type: 'text/csv' });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            files: [file],
+            title: 'Relatório de Vendas PrintFlow',
+            text: 'Relatório exportado do PrintFlow 3D'
+          });
+          return;
+        }
+      } catch (err) {
+        // User cancelled or unsupported, fallback to regular download
+      }
+    }
+
+    const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `printflow_vendas_${new Date().toISOString().split('T')[0]}.csv`);
+    link.href = url;
+    link.download = filename;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
+
 
   const COLORS = ['#10b981', '#3b82f6', '#8b5cf6', '#f59e0b', '#ef4444'];
 

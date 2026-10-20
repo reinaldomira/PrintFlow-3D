@@ -66,6 +66,7 @@ export interface Customer {
 
 export interface OrderItem {
   partId: string;
+  name?: string;
   quantity: number;
   unitPrice: number;
 }
