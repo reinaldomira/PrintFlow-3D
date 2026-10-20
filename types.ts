@@ -105,3 +105,17 @@ export interface User {
   id: string;
   email: string;
 }
+
+export interface PrintFailure {
+  id: string;
+  printerId?: string;
+  printerName: string;
+  reason: string;
+  filamentId?: string;
+  filamentName?: string;
+  gramsLost: number;
+  printTimeHoursLost: number;
+  costLost: number;
+  date: string;
+  notes?: string;
+}

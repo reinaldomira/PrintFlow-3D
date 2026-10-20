@@ -18,6 +18,7 @@ export const Orders: React.FC = () => {
   const [expandedOrders, setExpandedOrders] = useState<Record<string, boolean>>({});
   const [isSaving, setIsSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [pageNotice, setPageNotice] = useState<{ type: 'warning' | 'error' | 'success'; message: string } | null>(null);
 
   // Quick Customer Creation inline
   const [isQuickCustomerOpen, setIsQuickCustomerOpen] = useState(false);
@@ -29,7 +30,7 @@ export const Orders: React.FC = () => {
   const [isCustomItemOpen, setIsCustomItemOpen] = useState(false);
   const [customItemName, setCustomItemName] = useState('');
   const [customItemPrice, setCustomItemPrice] = useState<number | ''>('');
-  const [customItemQty, setCustomItemQty] = useState(1);
+  const [customItemQty, setCustomItemQty] = useState<number | ''>(1);
 
   // Printable Receipt Modal
   const [receiptOrder, setReceiptOrder] = useState<Order | null>(null);
@@ -66,7 +67,7 @@ export const Orders: React.FC = () => {
   }, [orders, customers, parts, searchTerm, filterStatus]);
 
   const orderSubtotal = useMemo(() => {
-    return (orderForm.items || []).reduce((sum, item) => sum + ((Number(item.unitPrice) || 0) * (item.quantity || 1)), 0);
+    return (orderForm.items || []).reduce((sum, item) => sum + ((Number(item.unitPrice) || 0) * (Number(item.quantity) || 0)), 0);
   }, [orderForm.items]);
 
   const orderTotal = useMemo(() => {
@@ -144,7 +145,7 @@ export const Orders: React.FC = () => {
     const newItem: OrderItem = {
       partId: `custom_${Date.now()}`,
       name: customItemName.trim(),
-      quantity: Number(customItemQty) || 1,
+      quantity: Math.max(1, Math.round(Number(customItemQty) || 1)),
       unitPrice: Number(customItemPrice) || 0
     };
 
@@ -161,6 +162,7 @@ export const Orders: React.FC = () => {
 
   const handleSaveOrder = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSaving) return;
     setFormError(null);
 
     if (!orderForm.items || orderForm.items.length === 0) {
@@ -176,55 +178,23 @@ export const Orders: React.FC = () => {
     setIsSaving(true);
 
     try {
-      // 1. Atualizar estoque de filamento de forma segura (não-bloqueante)
-      if (!editingOrderId) {
-        try {
-          const filamentDeductions: Record<string, number> = {};
-
-          orderForm.items.forEach(orderItem => {
-            const part = parts.find(p => p.id === orderItem.partId);
-            if (!part) return;
-
-            if (part.recipe && part.recipe.length > 0) {
-              part.recipe.forEach(recipeItem => {
-                const grams = (recipeItem.grams || 0) * (orderItem.quantity || 1);
-                filamentDeductions[recipeItem.filamentId] = (filamentDeductions[recipeItem.filamentId] || 0) + grams;
-              });
-            } else if (Number(part.weight) > 0 && filaments.length > 0) {
-              const matchedFilament = filaments.find(f => f.material.toLowerCase() === (part.material || 'PLA').toLowerCase()) || filaments[0];
-              if (matchedFilament) {
-                const grams = Number(part.weight) * (orderItem.quantity || 1);
-                filamentDeductions[matchedFilament.id] = (filamentDeductions[matchedFilament.id] || 0) + grams;
-              }
-            }
-          });
-
-          const filamentUpdates = Object.entries(filamentDeductions).map(([filamentId, usedGrams]) => {
-            const current = filaments.find(f => f.id === filamentId);
-            const newWeight = Math.max(0, (current?.remainingWeight || 1000) - usedGrams);
-            return supabase.from('filaments')
-              .update({ remainingWeight: newWeight })
-              .eq('id', filamentId);
-          });
-
-          if (filamentUpdates.length > 0) {
-            await Promise.all(filamentUpdates);
-          }
-        } catch (filErr) {
-          console.warn('Aviso: Baixa no estoque de filamento ignorada por inconsistência:', filErr);
-        }
-      }
-
       // Validação estrita de UUID para o campo customerId no PostgreSQL
       const isValidUUID = (str?: string | null) => 
         Boolean(str && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str));
 
       const safeCustomerId = isValidUUID(orderForm.customerId) ? orderForm.customerId : null;
 
-      // 2. Salvar ou Atualizar pedido com suporte a bancos que ainda não rodaram o SQL com discount/paymentMethod
+      // Sanitiza itens garantindo que a quantidade seja inteira e positiva
+      const sanitizedItems = (orderForm.items || []).map(item => ({
+        ...item,
+        quantity: Math.max(1, Math.round(Number(item.quantity) || 1)),
+        unitPrice: Math.max(0, Number(item.unitPrice) || 0)
+      }));
+
+      // 1. Salvar ou Atualizar pedido no Supabase PRIMEIRO
       const basePayload: any = {
         customerId: safeCustomerId,
-        items: orderForm.items,
+        items: sanitizedItems,
         totalValue: Number(orderTotal) || 0,
         user_id: user.id
       };
@@ -281,13 +251,73 @@ export const Orders: React.FC = () => {
         }
       }
 
+      // Se o pedido não foi salvo, NÃO prosseguir para a baixa de estoque
       if (saveResult.error) {
-        throw new Error(saveResult.error.message || 'Falha ao salvar pedido no Supabase');
+        throw new Error(saveResult.error.message || 'Falha ao salvar pedido no Supabase.');
       }
 
+      // 2. Com o pedido CONFIRMADO como salvo, realizar baixa de filamentos APENAS em novos pedidos
+      let filamentWarning: string | null = null;
+
+      if (!editingOrderId) {
+        const filamentDeductions: Record<string, number> = {};
+
+        sanitizedItems.forEach(orderItem => {
+          const part = parts.find(p => p.id === orderItem.partId);
+          if (!part) return;
+
+          if (part.recipe && part.recipe.length > 0) {
+            part.recipe.forEach(recipeItem => {
+              const grams = (recipeItem.grams || 0) * (orderItem.quantity || 1);
+              filamentDeductions[recipeItem.filamentId] = (filamentDeductions[recipeItem.filamentId] || 0) + grams;
+            });
+          } else if (Number(part.weight) > 0 && filaments.length > 0) {
+            const matchedFilament = filaments.find(f => f.material.toLowerCase() === (part.material || 'PLA').toLowerCase()) || filaments[0];
+            if (matchedFilament) {
+              const grams = Number(part.weight) * (orderItem.quantity || 1);
+              filamentDeductions[matchedFilament.id] = (filamentDeductions[matchedFilament.id] || 0) + grams;
+            }
+          }
+        });
+
+        const deductionEntries = Object.entries(filamentDeductions);
+        if (deductionEntries.length > 0) {
+          const updatePromises = deductionEntries.map(async ([filamentId, usedGrams]) => {
+            const current = filaments.find(f => f.id === filamentId);
+            const currentWeight = current?.remainingWeight ?? current?.weight ?? 1000;
+            const newWeight = Math.max(0, currentWeight - usedGrams);
+
+            const { error: updateError } = await supabase
+              .from('filaments')
+              .update({ remainingWeight: newWeight })
+              .eq('id', filamentId);
+
+            return { filamentId, error: updateError };
+          });
+
+          const results = await Promise.all(updatePromises);
+          const failedUpdates = results.filter(r => r.error);
+
+          if (failedUpdates.length > 0) {
+            console.warn('Falha ao atualizar estoque de filamento no Supabase:', failedUpdates);
+            filamentWarning = 'O pedido foi registrado com sucesso! Porém, ocorreu uma falha ao atualizar o estoque de filamento no Supabase. Por favor, confira o estoque na aba Filamentos.';
+          }
+        }
+      }
+
+      // 3. Atualizar dados na memória com o estado real confirmado pelo Supabase
       await refreshData();
+
+      // Fechar modal
       setIsModalOpen(false);
       setEditingOrderId(null);
+
+      // Exibir aviso se houve falha no estoque, ou limpar aviso anterior
+      if (filamentWarning) {
+        setPageNotice({ type: 'warning', message: filamentWarning });
+      } else {
+        setPageNotice(null);
+      }
     } catch (err: any) {
       console.error('Erro salvar pedido:', err);
       setFormError(err.message || 'Erro ao comunicar com o banco de dados.');
@@ -314,17 +344,25 @@ export const Orders: React.FC = () => {
     }
   };
 
+  const setItemQuantity = (partId: string, quantity: number) => {
+    setOrderForm(prev => ({
+      ...prev,
+      items: prev.items.map(i => i.partId === partId ? { ...i, quantity } : i)
+    }));
+  };
+
   const updateItemQuantity = (partId: string, delta: number) => {
     const existing = orderForm.items.find(i => i.partId === partId);
     if (!existing) return;
-    const newQty = existing.quantity + delta;
+    const currentQty = Number(existing.quantity) || 1;
+    const newQty = currentQty + delta;
     if (newQty <= 0) {
       deleteItem(partId);
     } else {
-      setOrderForm({
-        ...orderForm,
-        items: orderForm.items.map(i => i.partId === partId ? { ...i, quantity: newQty } : i)
-      });
+      setOrderForm(prev => ({
+        ...prev,
+        items: prev.items.map(i => i.partId === partId ? { ...i, quantity: newQty } : i)
+      }));
     }
   };
 
@@ -404,6 +442,34 @@ export const Orders: React.FC = () => {
           <Plus className="w-5 h-5" /> Nova Venda
         </button>
       </div>
+
+      {/* Banner de Aviso de Estoque ou Operação */}
+      {pageNotice && (
+        <div className={`p-4 rounded-2xl flex items-start justify-between gap-3 text-sm animate-in fade-in duration-200 ${
+          pageNotice.type === 'warning' 
+            ? 'bg-amber-500/10 border border-amber-500/30 text-amber-300'
+            : pageNotice.type === 'error'
+            ? 'bg-red-500/10 border border-red-500/30 text-red-300'
+            : 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300'
+        }`}>
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5 text-amber-400" />
+            <div>
+              <p className="font-bold text-xs uppercase tracking-wider text-amber-400">
+                {pageNotice.type === 'warning' ? 'Atenção com o Estoque de Filamento' : 'Aviso do Sistema'}
+              </p>
+              <p className="text-xs text-zinc-300 mt-0.5 leading-relaxed">{pageNotice.message}</p>
+            </div>
+          </div>
+          <button 
+            onClick={() => setPageNotice(null)} 
+            className="text-zinc-400 hover:text-white p-1 rounded-lg flex-shrink-0"
+            title="Fechar aviso"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Busca e Filtros */}
       <div className="flex flex-col sm:flex-row gap-4">
@@ -728,10 +794,19 @@ export const Orders: React.FC = () => {
                         <input 
                           type="number" 
                           min="1"
+                          step="1"
                           placeholder="Qtd"
                           className="w-20 bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white outline-none focus:border-emerald-500 text-center"
-                          value={customItemQty}
-                          onChange={e => setCustomItemQty(Math.max(1, Number(e.target.value)))}
+                          value={customItemQty === '' ? '' : customItemQty}
+                          onChange={e => {
+                            const val = e.target.value;
+                            setCustomItemQty(val === '' ? '' : Math.max(1, Number(val)));
+                          }}
+                          onBlur={() => {
+                            if (!customItemQty || customItemQty < 1) {
+                              setCustomItemQty(1);
+                            }
+                          }}
                         />
                         <button 
                           type="button"
@@ -775,8 +850,8 @@ export const Orders: React.FC = () => {
                             <p className="text-[10px] font-bold text-white truncate">{part.name}</p>
                           </div>
                           {inOrder && (
-                            <div className="absolute top-1.5 right-1.5 w-6 h-6 bg-emerald-500 rounded-full text-xs font-black flex items-center justify-center text-zinc-950 shadow-md">
-                              {inOrder.quantity}
+                            <div className="absolute top-1.5 right-1.5 min-w-[24px] h-6 px-1.5 bg-emerald-500 rounded-full text-xs font-black flex items-center justify-center text-zinc-950 shadow-md">
+                              {inOrder.quantity}x
                             </div>
                           )}
                         </button>
@@ -790,7 +865,7 @@ export const Orders: React.FC = () => {
               {orderForm.items.length > 0 && (
                 <div className="space-y-3 bg-zinc-950/60 p-4 rounded-2xl border border-zinc-800">
                   <label className="text-xs font-black uppercase text-zinc-400 tracking-wider block">
-                    3. Itens no Pedido ({orderForm.items.reduce((s, i) => s + (i.quantity || 1), 0)})
+                    3. Itens no Pedido ({orderForm.items.reduce((s, i) => s + (Number(i.quantity) || 0), 0)} un)
                   </label>
                   <div className="space-y-2">
                     {orderForm.items.map(item => {
@@ -823,32 +898,60 @@ export const Orders: React.FC = () => {
                           </div>
 
                           <div className="flex items-center justify-between sm:justify-end gap-3 pt-2 sm:pt-0 border-t sm:border-t-0 border-zinc-800">
-                            <div className="flex items-center bg-zinc-800 rounded-lg border border-zinc-700">
-                              <button 
-                                type="button" 
-                                onClick={() => updateItemQuantity(item.partId, -1)}
-                                className="p-1.5 text-zinc-400 hover:text-white"
-                              >
-                                <Minus className="w-3.5 h-3.5" />
-                              </button>
-                              <span className="w-8 text-center text-xs font-black text-white">{item.quantity}</span>
-                              <button 
-                                type="button" 
-                                onClick={() => updateItemQuantity(item.partId, 1)}
-                                className="p-1.5 text-zinc-400 hover:text-white"
-                              >
-                                <Plus className="w-3.5 h-3.5" />
-                              </button>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[11px] font-bold text-zinc-400">Qtd:</span>
+                              <div className="flex items-center bg-zinc-800 rounded-lg border border-zinc-700 overflow-hidden focus-within:border-emerald-500 focus-within:ring-1 focus-within:ring-emerald-500/40">
+                                <button 
+                                  type="button" 
+                                  onClick={() => updateItemQuantity(item.partId, -1)}
+                                  className="p-1.5 text-zinc-400 hover:text-white hover:bg-zinc-700 active:scale-95 transition-colors"
+                                  title="Diminuir quantidade"
+                                >
+                                  <Minus className="w-3.5 h-3.5" />
+                                </button>
+                                <input 
+                                  type="number" 
+                                  min="1"
+                                  step="1"
+                                  value={item.quantity === 0 ? '' : item.quantity}
+                                  placeholder="1"
+                                  onChange={e => {
+                                    const val = e.target.value;
+                                    if (val === '') {
+                                      setItemQuantity(item.partId, 0);
+                                    } else {
+                                      const num = parseInt(val, 10);
+                                      setItemQuantity(item.partId, isNaN(num) ? 1 : Math.max(0, num));
+                                    }
+                                  }}
+                                  onBlur={() => {
+                                    if (!item.quantity || item.quantity < 1) {
+                                      setItemQuantity(item.partId, 1);
+                                    }
+                                  }}
+                                  className="w-14 text-center text-xs font-black text-white bg-transparent outline-none py-1 border-x border-zinc-700/60 focus:bg-zinc-700/50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                  title="Clique para digitar a quantidade desejada"
+                                />
+                                <button 
+                                  type="button" 
+                                  onClick={() => updateItemQuantity(item.partId, 1)}
+                                  className="p-1.5 text-zinc-400 hover:text-white hover:bg-zinc-700 active:scale-95 transition-colors"
+                                  title="Aumentar quantidade"
+                                >
+                                  <Plus className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
                             </div>
 
                             <span className="text-sm font-black text-emerald-400 w-24 text-right">
-                              {formatCurrency(item.quantity * item.unitPrice)}
+                              {formatCurrency((Number(item.quantity) || 0) * (Number(item.unitPrice) || 0))}
                             </span>
 
                             <button 
                               type="button" 
                               onClick={() => deleteItem(item.partId)}
                               className="p-1.5 text-zinc-600 hover:text-red-500 transition-colors"
+                              title="Remover item"
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>
