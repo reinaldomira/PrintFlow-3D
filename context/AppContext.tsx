@@ -1,6 +1,5 @@
-
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { Part, Customer, Order, Settings, User, Filament, Printer } from '../types';
+import { Part, Customer, Order, Settings, User, Filament, Printer, BusinessInfo } from '../types';
 import { supabase } from '../services/supabase';
 
 interface AppContextType {
@@ -34,7 +33,23 @@ const DEFAULT_SETTINGS: Settings = {
   hourlyMaintenanceCost: 1.50,
   currency: 'R$',
   filamentBrands: ['3D Prime', 'Creality', 'Voolt3D', 'GTMax'],
-  categories: ['Chaveiro', 'Organizador', 'Decoração', 'Suporte', 'Action Figure', 'Outros']
+  categories: ['Chaveiro', 'Organizador', 'Decoração', 'Suporte', 'Action Figure', 'Outros'],
+  businessInfo: {
+    companyName: '',
+    phone: '',
+    whatsapp: '',
+    instagram: '',
+    email: '',
+    website: '',
+    cityState: '',
+    address: '',
+    logoUrl: ''
+  },
+  defaultPackagingCost: 2.50,
+  defaultOtherCosts: 0.00,
+  defaultPaymentFeePercent: 3.99,
+  defaultMarketplaceFeePercent: 0.00,
+  defaultTaxPercent: 6.00
 };
 
 /**
@@ -104,6 +119,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (user) {
       refreshData();
     }
+
+    const handleSyncOnVisible = () => {
+      if (document.visibilityState === 'visible' && user) {
+        refreshData();
+      }
+    };
+
+    window.addEventListener('visibilitychange', handleSyncOnVisible);
+    window.addEventListener('focus', handleSyncOnVisible);
+
+    return () => {
+      window.removeEventListener('visibilitychange', handleSyncOnVisible);
+      window.removeEventListener('focus', handleSyncOnVisible);
+    };
   }, [user]);
 
   const refreshData = async () => {
@@ -171,7 +200,57 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             settingsError = `Tabela "settings": ${sanitized}`;
           }
         } else if (s) {
-          setSettingsState(s);
+          // Cloud business info pode estar em business_info (snake_case) ou businessInfo (camelCase)
+          const cloudBusiness = (s.business_info && typeof s.business_info === 'object' && Object.keys(s.business_info).length > 0)
+            ? s.business_info
+            : (s.businessInfo && typeof s.businessInfo === 'object' && Object.keys(s.businessInfo).length > 0)
+              ? s.businessInfo
+              : undefined;
+
+          let localBusiness: BusinessInfo | undefined = undefined;
+          try {
+            const raw = localStorage.getItem(`printflow_business_info_${user.id}`);
+            if (raw) localBusiness = JSON.parse(raw);
+          } catch (e) {
+            // ignore
+          }
+
+          const resolvedBusiness: BusinessInfo = cloudBusiness || localBusiness || DEFAULT_SETTINGS.businessInfo;
+
+          // Se os dados vieram da nuvem, mantém cache local atualizado para uso offline
+          if (cloudBusiness) {
+            try {
+              localStorage.setItem(`printflow_business_info_${user.id}`, JSON.stringify(cloudBusiness));
+            } catch (e) {
+              // ignore
+            }
+          }
+
+          setSettingsState({
+            defaultEnergyCost: Number(s.defaultEnergyCost ?? s.default_energy_cost ?? DEFAULT_SETTINGS.defaultEnergyCost),
+            defaultFilamentCost: Number(s.defaultFilamentCost ?? s.default_filament_cost ?? DEFAULT_SETTINGS.defaultFilamentCost),
+            defaultProfitMargin: Number(s.defaultProfitMargin ?? s.default_profit_margin ?? DEFAULT_SETTINGS.defaultProfitMargin),
+            hourlyLaborRate: Number(s.hourlyLaborRate ?? s.hourly_labor_rate ?? DEFAULT_SETTINGS.hourlyLaborRate),
+            hourlyMaintenanceCost: Number(s.hourlyMaintenanceCost ?? s.hourly_maintenance_cost ?? DEFAULT_SETTINGS.hourlyMaintenanceCost),
+            currency: s.currency || DEFAULT_SETTINGS.currency,
+            filamentBrands: s.filamentBrands || s.filament_brands || DEFAULT_SETTINGS.filamentBrands,
+            categories: s.categories || DEFAULT_SETTINGS.categories,
+            businessInfo: resolvedBusiness
+          });
+        } else {
+          let localBusiness: BusinessInfo | undefined = undefined;
+          try {
+            const raw = localStorage.getItem(`printflow_business_info_${user.id}`);
+            if (raw) localBusiness = JSON.parse(raw);
+          } catch (e) {
+            // ignore
+          }
+          if (localBusiness) {
+            setSettingsState(prev => ({
+              ...prev,
+              businessInfo: localBusiness
+            }));
+          }
         }
       } catch (err: any) {
         const sanitized = sanitizeErrorMessage(err?.message || 'Falha de conexão');
@@ -214,28 +293,92 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const setSettings = async (newSettings: Settings): Promise<boolean> => {
+    // 1. Armazenamento local imediato (como cache/offline fallback isolado por usuário)
+    if (user && newSettings.businessInfo) {
+      try {
+        localStorage.setItem(`printflow_business_info_${user.id}`, JSON.stringify(newSettings.businessInfo));
+      } catch (e) {
+        console.warn('Erro ao salvar businessInfo no localStorage:', e);
+      }
+    }
+
     if (!user) {
       setSettingsState(newSettings);
       return true;
     }
 
     try {
-      const { error } = await supabase
-        .from('settings')
-        .upsert({ ...newSettings, user_id: user.id });
+      const businessPayload = newSettings.businessInfo || {};
 
-      if (error) {
-        const sanitized = sanitizeErrorMessage(error.message || `Código ${error.code || 'desconhecido'}`);
+      // 2. Tentativa 1: Enviar com business_info para sincronização em nuvem entre dispositivos (padrão Postgres)
+      let upsertRes = await supabase
+        .from('settings')
+        .upsert({
+          user_id: user.id,
+          currency: newSettings.currency || 'R$',
+          categories: newSettings.categories || [],
+          default_energy_cost: newSettings.defaultEnergyCost,
+          default_filament_cost: newSettings.defaultFilamentCost,
+          default_profit_margin: newSettings.defaultProfitMargin,
+          filament_brands: newSettings.filamentBrands || [],
+          business_info: businessPayload,
+        });
+
+      // Tentativa 2: Se falhar porque a coluna é "businessInfo" (camelCase)
+      if (upsertRes.error && upsertRes.error.code === 'PGRST204' && upsertRes.error.message.includes('business_info')) {
+        upsertRes = await supabase
+          .from('settings')
+          .upsert({
+            user_id: user.id,
+            currency: newSettings.currency || 'R$',
+            categories: newSettings.categories || [],
+            default_energy_cost: newSettings.defaultEnergyCost,
+            default_filament_cost: newSettings.defaultFilamentCost,
+            default_profit_margin: newSettings.defaultProfitMargin,
+            filament_brands: newSettings.filamentBrands || [],
+            businessInfo: businessPayload,
+          });
+      }
+
+      // Tentativa 3: Se as colunas de dados comerciais ainda não foram adicionadas no Supabase pelo usuário,
+      // salva as configurações básicas de custos para não perder valores numéricos e orienta sobre a coluna SQL
+      if (upsertRes.error && upsertRes.error.code === 'PGRST204' && (upsertRes.error.message.includes('businessInfo') || upsertRes.error.message.includes('business_info'))) {
+        console.warn('Coluna businessInfo/business_info não encontrada no Supabase. Gravando dados comerciais no cache local.');
+        
+        const fallbackRes = await supabase
+          .from('settings')
+          .upsert({
+            user_id: user.id,
+            currency: newSettings.currency || 'R$',
+            categories: newSettings.categories || [],
+            default_energy_cost: newSettings.defaultEnergyCost,
+            default_filament_cost: newSettings.defaultFilamentCost,
+            default_profit_margin: newSettings.defaultProfitMargin,
+            filament_brands: newSettings.filamentBrands || [],
+          });
+
+        if (fallbackRes.error) {
+          const sanitized = sanitizeErrorMessage(fallbackRes.error.message || `Código ${fallbackRes.error.code || 'desconhecido'}`);
+          console.error('Erro ao salvar configurações no Supabase:', sanitized);
+          setDbError(`Falha ao salvar configurações: ${sanitized}`);
+          return false;
+        }
+
+        setSettingsState(newSettings);
+        setDbError('Configurações salvas! Para ativar sincronização de Dados Comerciais em outros celulares/PCs, execute o comando SQL em Configurações > Reparar Banco Cloud.');
+        return true;
+      }
+
+      if (upsertRes.error) {
+        const sanitized = sanitizeErrorMessage(upsertRes.error.message || `Código ${upsertRes.error.code || 'desconhecido'}`);
         console.error('Erro ao salvar configurações no Supabase:', sanitized);
         setDbError(`Falha ao salvar configurações: ${sanitized}`);
-        // Preserva o estado anterior intacto e não simula sucesso falso
         return false;
       }
 
-      // Gravado com sucesso no Supabase: reflete no estado local
+      // Gravado com sucesso no Supabase (incluindo dados comerciais para multi-dispositivos)!
       setSettingsState(newSettings);
-      // Limpa erro caso fosse relativo a settings
-      setDbError(prev => (prev && prev.includes('settings') ? null : prev));
+      setDbError(prev => (prev && (prev.includes('settings') || prev.includes('Dados Comerciais')) ? null : prev));
       return true;
     } catch (err: any) {
       const sanitized = sanitizeErrorMessage(err?.message || 'Falha de conexão');

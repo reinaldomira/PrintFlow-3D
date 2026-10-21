@@ -1,17 +1,25 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
-import { Order, OrderStatus, PaymentMethod, OrderItem, Customer } from '../types';
+import { Order, OrderStatus, PaymentMethod, OrderItem, Customer, FinancialConfig, PricingBreakdown } from '../types';
 import { supabase } from '../services/supabase';
 import { formatCurrency, calculatePartCosts } from '../constants';
+import { STATUS_LIST, getStatusConfig, normalizeOrderStatus, isOrderActive } from '../utils/statusUtils';
+import { calculateSalePrice } from '../utils/pricingCalculator';
 import { 
   Plus, Search, Trash2, ShoppingBag, X, User as UserIcon, Minus, 
   ChevronDown, ChevronUp, Package, Tag, Loader2, CreditCard, Banknote, 
-  QrCode, MessageCircle, Printer as PrinterIcon, Edit2, CheckCircle2, UserPlus, Wrench, AlertCircle
+  QrCode, MessageCircle, Printer as PrinterIcon, Edit2, CheckCircle2, UserPlus, 
+  Wrench, AlertCircle, FileText, Calculator, TrendingUp, SlidersHorizontal, 
+  AlertTriangle, Percent, DollarSign, Clock, ShieldAlert, Sparkles
 } from 'lucide-react';
+import { QuotePdfModal } from '../components/QuotePdfModal';
+import { PricingCalculatorModal } from '../components/PricingCalculatorModal';
 
 export const Orders: React.FC = () => {
   const { orders, refreshData, customers, parts, filaments, printers, settings, user } = useApp();
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isPricingCalculatorOpen, setIsPricingCalculatorOpen] = useState(false);
   const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<OrderStatus | 'All'>('All');
@@ -34,18 +42,57 @@ export const Orders: React.FC = () => {
 
   // Printable Receipt Modal
   const [receiptOrder, setReceiptOrder] = useState<Order | null>(null);
+  // Quote PDF Modal
+  const [quoteModalOrder, setQuoteModalOrder] = useState<Order | null>(null);
 
+  // Form de Pedido com Status Completo
   const [orderForm, setOrderForm] = useState<{
     customerId: string;
     items: OrderItem[];
     discount: number;
     paymentMethod: PaymentMethod;
+    status: OrderStatus;
   }>({
     customerId: '',
     items: [],
     discount: 0,
-    paymentMethod: PaymentMethod.PIX
+    paymentMethod: PaymentMethod.PIX,
+    status: OrderStatus.QUEUE
   });
+
+  // Configurações Financeiras Avançadas da Venda Atual (pricingCalculator)
+  const [financialForm, setFinancialForm] = useState<FinancialConfig>({
+    embalagem: settings.defaultPackagingCost ?? 2.50,
+    outrosCustos: settings.defaultOtherCosts ?? 0.00,
+    taxaPagamento: settings.defaultPaymentFeePercent ?? 3.99,
+    comissaoMarketplace: settings.defaultMarketplaceFeePercent ?? 0.00,
+    imposto: settings.defaultTaxPercent ?? 6.00,
+    margemLucro: settings.defaultProfitMargin ?? 100,
+    arredondamentoComercial: false
+  });
+  const [showAdvancedPricing, setShowAdvancedPricing] = useState(false);
+
+  const location = useLocation();
+
+  // Abrir modal de novo pedido automaticamente se veio da tela de Clientes
+  useEffect(() => {
+    const state = location.state as { customerId?: string; openNew?: boolean } | null;
+    if (state?.openNew && state?.customerId) {
+      setEditingOrderId(null);
+      setFormError(null);
+      setOrderForm({
+        customerId: state.customerId,
+        items: [],
+        discount: 0,
+        paymentMethod: PaymentMethod.PIX,
+        status: OrderStatus.QUEUE
+      });
+      setIsQuickCustomerOpen(false);
+      setIsCustomItemOpen(false);
+      setIsModalOpen(true);
+      window.history.replaceState({}, document.title);
+    }
+  }, [location.state]);
 
   const toggleExpand = (id: string) => {
     setExpandedOrders(prev => ({ ...prev, [id]: !prev[id] }));
@@ -53,7 +100,12 @@ export const Orders: React.FC = () => {
 
   const filteredOrders = useMemo(() => {
     return orders.filter(o => {
-      if (o.status === OrderStatus.DELIVERED) return false;
+      const normalized = normalizeOrderStatus(o.status);
+      if (filterStatus === 'All') {
+        return normalized !== OrderStatus.DELIVERED && normalized !== OrderStatus.CANCELLED;
+      }
+      return normalized === filterStatus;
+    }).filter(o => {
       const customer = customers.find(c => c.id === o.customerId);
       const customerName = customer?.name || 'Cliente Balcão';
       const matchesCustomer = customerName.toLowerCase().includes(searchTerm.toLowerCase());
@@ -61,8 +113,7 @@ export const Orders: React.FC = () => {
         const part = parts.find(p => p.id === item.partId);
         return (part?.name || item.name || '').toLowerCase().includes(searchTerm.toLowerCase());
       });
-      const matchesStatus = filterStatus === 'All' || o.status === filterStatus;
-      return (matchesCustomer || matchesItem) && matchesStatus;
+      return matchesCustomer || matchesItem;
     }).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [orders, customers, parts, searchTerm, filterStatus]);
 
@@ -74,6 +125,60 @@ export const Orders: React.FC = () => {
     return Math.max(0, orderSubtotal - (Number(orderForm.discount) || 0));
   }, [orderSubtotal, orderForm.discount]);
 
+  // Custo de fabricação 3D dos itens selecionados no formulário
+  const itemsProductionCost = useMemo(() => {
+    return (orderForm.items || []).reduce((sum, item) => {
+      const part = parts.find(p => p.id === item.partId);
+      if (!part) return sum + ((Number(item.unitPrice) || 0) * 0.4 * (Number(item.quantity) || 1));
+      const costInfo = calculatePartCosts(part, filaments, printers, settings);
+      const unitCost = costInfo.totalCost > 0 ? costInfo.totalCost : ((Number(item.unitPrice) || 0) * 0.4);
+      return sum + (unitCost * (Number(item.quantity) || 1));
+    }, 0);
+  }, [orderForm.items, parts, filaments, printers, settings]);
+
+  // Quantidade total de itens no pedido
+  const orderTotalQuantity = useMemo(() => {
+    return (orderForm.items || []).reduce((acc, i) => acc + (Number(i.quantity) || 0), 0);
+  }, [orderForm.items]);
+
+  // Cálculo avançado da formação de preço, lucro líquido e margem real (sem duplicar lucro do catálogo)
+  const pricingBreakdown = useMemo(() => {
+    return calculateSalePrice({
+      custoProducao: itemsProductionCost,
+      precoTabelaOriginal: orderSubtotal, // Usa o preço já estabelecido das peças
+      quantidade: Math.max(1, orderTotalQuantity),
+      embalagem: financialForm.embalagem,
+      embalagemPorUnidade: financialForm.embalagemPorUnidade ?? true,
+      outrosCustos: financialForm.outrosCustos,
+      imposto: financialForm.imposto,
+      taxaPagamento: financialForm.taxaPagamento,
+      comissaoMarketplace: financialForm.comissaoMarketplace,
+      margemLucro: financialForm.margemLucro,
+      desconto: Number(orderForm.discount) || 0,
+      arredondamentoComercial: financialForm.arredondamentoComercial,
+      repassarTaxas: financialForm.repassarTaxas
+    });
+  }, [itemsProductionCost, orderSubtotal, orderTotalQuantity, financialForm, orderForm.discount]);
+
+  const applySuggestedPriceToItems = () => {
+    if (!orderForm.items || orderForm.items.length === 0) return;
+    const totalTaxas = (financialForm.imposto + financialForm.taxaPagamento + financialForm.comissaoMarketplace) / 100;
+    if (totalTaxas >= 1) return;
+    const fator = 1 / (1 - totalTaxas);
+    setOrderForm(prev => ({
+      ...prev,
+      items: prev.items.map(item => {
+        const part = parts.find(p => p.id === item.partId);
+        const basePrice = part ? calculatePartCosts(part, filaments, printers, settings).suggestedPrice : (Number(item.unitPrice) || 0);
+        const newUnitPrice = Number((basePrice * fator).toFixed(2));
+        return {
+          ...item,
+          unitPrice: Math.max(0.01, newUnitPrice)
+        };
+      })
+    }));
+  };
+
   const openNewOrderModal = () => {
     setEditingOrderId(null);
     setFormError(null);
@@ -81,8 +186,19 @@ export const Orders: React.FC = () => {
       customerId: customers[0]?.id || '',
       items: [],
       discount: 0,
-      paymentMethod: PaymentMethod.PIX
+      paymentMethod: PaymentMethod.PIX,
+      status: OrderStatus.QUEUE
     });
+    setFinancialForm({
+      embalagem: settings.defaultPackagingCost ?? 2.50,
+      outrosCustos: settings.defaultOtherCosts ?? 0.00,
+      taxaPagamento: settings.defaultPaymentFeePercent ?? 3.99,
+      comissaoMarketplace: settings.defaultMarketplaceFeePercent ?? 0.00,
+      imposto: settings.defaultTaxPercent ?? 6.00,
+      margemLucro: settings.defaultProfitMargin ?? 100,
+      arredondamentoComercial: false
+    });
+    setShowAdvancedPricing(false);
     setIsQuickCustomerOpen(false);
     setIsCustomItemOpen(false);
     setIsModalOpen(true);
@@ -95,8 +211,23 @@ export const Orders: React.FC = () => {
       customerId: order.customerId || '',
       items: (order.items || []).map(i => ({ ...i })),
       discount: order.discount || 0,
-      paymentMethod: order.paymentMethod || PaymentMethod.PIX
+      paymentMethod: order.paymentMethod || PaymentMethod.PIX,
+      status: normalizeOrderStatus(order.status)
     });
+    if (order.custosFinanceiros) {
+      setFinancialForm({ ...order.custosFinanceiros });
+    } else {
+      setFinancialForm({
+        embalagem: settings.defaultPackagingCost ?? 2.50,
+        outrosCustos: settings.defaultOtherCosts ?? 0.00,
+        taxaPagamento: settings.defaultPaymentFeePercent ?? 3.99,
+        comissaoMarketplace: settings.defaultMarketplaceFeePercent ?? 0.00,
+        imposto: settings.defaultTaxPercent ?? 6.00,
+        margemLucro: settings.defaultProfitMargin ?? 100,
+        arredondamentoComercial: false
+      });
+    }
+    setShowAdvancedPricing(false);
     setIsQuickCustomerOpen(false);
     setIsCustomItemOpen(false);
     setIsModalOpen(true);
@@ -196,11 +327,11 @@ export const Orders: React.FC = () => {
         customerId: safeCustomerId,
         items: sanitizedItems,
         totalValue: Number(orderTotal) || 0,
+        status: orderForm.status || OrderStatus.QUEUE,
         user_id: user.id
       };
 
       if (!editingOrderId) {
-        basePayload.status = OrderStatus.PRODUCTION;
         basePayload.createdAt = new Date().toISOString();
       }
 
@@ -209,6 +340,8 @@ export const Orders: React.FC = () => {
         ...basePayload,
         discount: Number(orderForm.discount) || 0,
         paymentMethod: orderForm.paymentMethod || PaymentMethod.PIX,
+        custosFinanceiros: financialForm,
+        detalhesPrecificacao: pricingBreakdown,
         payments: [{
           id: Math.random().toString(36).substring(2, 9),
           amount: Number(orderTotal) || 0,
@@ -232,6 +365,12 @@ export const Orders: React.FC = () => {
         console.warn('Detectada coluna ausente em orders no Supabase, aplicando fallback resiliente:', saveResult.error.message);
         const retryPayload = { ...fullPayload };
 
+        if (saveResult.error.message?.includes('custosFinanceiros') || saveResult.error.message?.includes('custos_financeiros')) {
+          delete retryPayload.custosFinanceiros;
+        }
+        if (saveResult.error.message?.includes('detalhesPrecificacao') || saveResult.error.message?.includes('detalhes_precificacao')) {
+          delete retryPayload.detalhesPrecificacao;
+        }
         if (saveResult.error.message?.includes('discount')) {
           delete retryPayload.discount;
         }
@@ -420,12 +559,8 @@ export const Orders: React.FC = () => {
     }
   };
 
-  const getStatusColor = (status: OrderStatus) => {
-    switch (status) {
-      case OrderStatus.PRODUCTION: return 'bg-amber-500/10 text-amber-500 border-amber-500/30';
-      case OrderStatus.READY: return 'bg-blue-500/10 text-blue-500 border-blue-500/30';
-      case OrderStatus.DELIVERED: return 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30';
-    }
+  const getStatusColor = (status: OrderStatus | string) => {
+    return getStatusConfig(status).badgeClass;
   };
 
   return (
@@ -435,12 +570,24 @@ export const Orders: React.FC = () => {
           <h2 className="text-2xl font-bold">Produção & Pedidos</h2>
           <p className="text-zinc-500">Gestão de vendas, encomendas e status de entrega</p>
         </div>
-        <button 
-          onClick={openNewOrderModal} 
-          className="bg-emerald-500 hover:bg-emerald-400 text-zinc-950 px-4 py-2.5 rounded-xl flex items-center gap-2 font-bold shadow-lg shadow-emerald-500/20 active:scale-95 transition-all text-sm"
-        >
-          <Plus className="w-5 h-5" /> Nova Venda
-        </button>
+        <div className="flex items-center gap-2.5">
+          <button 
+            type="button"
+            onClick={() => setIsPricingCalculatorOpen(true)} 
+            className="bg-zinc-800 hover:bg-zinc-700 text-zinc-100 border border-zinc-700/80 px-3.5 py-2.5 rounded-xl flex items-center gap-2 font-bold text-sm shadow-sm transition active:scale-95"
+            title="Calculadora Financeira Avançada de Venda (pricingCalculator)"
+          >
+            <Calculator className="w-4 h-4 text-emerald-400" />
+            <span className="hidden sm:inline">Calculadora Financeira</span>
+            <span className="sm:hidden">Calc</span>
+          </button>
+          <button 
+            onClick={openNewOrderModal} 
+            className="bg-emerald-500 hover:bg-emerald-400 text-zinc-950 px-4 py-2.5 rounded-xl flex items-center gap-2 font-bold shadow-lg shadow-emerald-500/20 active:scale-95 transition-all text-sm"
+          >
+            <Plus className="w-5 h-5" /> Nova Venda
+          </button>
+        </div>
       </div>
 
       {/* Banner de Aviso de Estoque ou Operação */}
@@ -483,20 +630,35 @@ export const Orders: React.FC = () => {
             onChange={e => setSearchTerm(e.target.value)}
           />
         </div>
-        <div className="flex gap-2 overflow-x-auto pb-1">
-          {(['All', OrderStatus.PRODUCTION, OrderStatus.READY] as const).map(st => (
-            <button
-              key={st}
-              onClick={() => setFilterStatus(st)}
-              className={`px-3 py-2 rounded-xl text-xs font-bold border whitespace-nowrap transition-all ${
-                filterStatus === st 
-                  ? 'bg-emerald-500 text-zinc-950 border-emerald-400' 
-                  : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:bg-zinc-800'
-              }`}
-            >
-              {st === 'All' ? 'Todos Ativos' : st}
-            </button>
-          ))}
+        <div className="flex gap-1.5 overflow-x-auto pb-1 max-w-full">
+          <button
+            onClick={() => setFilterStatus('All')}
+            className={`px-3 py-2 rounded-xl text-xs font-bold border whitespace-nowrap transition-all ${
+              filterStatus === 'All' 
+                ? 'bg-emerald-500 text-zinc-950 border-emerald-400 shadow-sm' 
+                : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:bg-zinc-800'
+            }`}
+          >
+            Todos Ativos ({orders.filter(o => isOrderActive(o.status)).length})
+          </button>
+          {STATUS_LIST.map(st => {
+            const count = orders.filter(o => normalizeOrderStatus(o.status) === st.key).length;
+            return (
+              <button
+                key={st.key}
+                onClick={() => setFilterStatus(st.key)}
+                className={`px-3 py-2 rounded-xl text-xs font-bold border whitespace-nowrap transition-all flex items-center gap-1.5 ${
+                  filterStatus === st.key 
+                    ? 'bg-emerald-500 text-zinc-950 border-emerald-400 shadow-sm' 
+                    : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:bg-zinc-800'
+                }`}
+              >
+                <span>{st.emoji}</span>
+                <span>{st.shortLabel}</span>
+                <span className="opacity-70 text-[10px]">({count})</span>
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -556,18 +718,31 @@ export const Orders: React.FC = () => {
                       <span className="text-xl font-black text-emerald-500">{formatCurrency(order.totalValue)}</span>
                     </div>
 
-                    {/* Mudança de Status Rápida */}
+                    {/* Mudança de Status Rápida com emojis e labels de fábrica */}
                     <select 
-                      className={`px-3 py-2 rounded-xl border text-xs font-bold cursor-pointer ${getStatusColor(order.status)}`}
-                      value={order.status} 
+                      className={`px-3 py-2 rounded-xl border text-xs font-bold cursor-pointer transition-colors ${getStatusColor(order.status)}`}
+                      value={normalizeOrderStatus(order.status)} 
                       onClick={e => e.stopPropagation()}
                       onChange={e => updateStatus(order.id, e.target.value as OrderStatus)}
                     >
-                      {Object.values(OrderStatus).map(s => <option key={s} value={s}>{s}</option>)}
+                      {STATUS_LIST.map(st => (
+                        <option key={st.key} value={st.key} className="bg-zinc-900 text-zinc-100">
+                          {st.emoji} {st.label}
+                        </option>
+                      ))}
                     </select>
 
                     {/* Ações Rápidas */}
                     <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                      <button 
+                        onClick={() => setQuoteModalOrder(order)} 
+                        title="Gerar Orçamento Oficial em PDF"
+                        className="p-2 bg-blue-500/10 text-blue-400 hover:bg-blue-600 hover:text-white rounded-lg transition-colors flex items-center gap-1 font-bold text-xs"
+                      >
+                        <FileText className="w-4 h-4" />
+                        <span className="hidden sm:inline text-[11px]">PDF</span>
+                      </button>
+
                       <button 
                         onClick={() => sendWhatsAppMessage(order)} 
                         title="Enviar comprovante no WhatsApp"
@@ -608,31 +783,165 @@ export const Orders: React.FC = () => {
                 </div>
 
                 {isExpanded && (
-                  <div className="px-5 pb-5 pt-3 border-t border-zinc-800/60 bg-zinc-950/40">
-                    <p className="text-[10px] uppercase font-bold text-zinc-500 mb-2">Itens da Encomenda:</p>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
-                      {(order.items || []).map((item, idx) => {
-                        const part = parts.find(p => p.id === item.partId);
-                        const itemName = item.name || part?.name || 'Peça';
-                        return (
-                          <div key={idx} className="flex items-center gap-3 p-2.5 rounded-xl bg-zinc-900 border border-zinc-800">
-                            {part?.imageUrl ? (
-                              <img src={part.imageUrl} className="w-10 h-10 rounded-lg object-cover flex-shrink-0" />
-                            ) : (
-                              <div className="w-10 h-10 rounded-lg bg-zinc-800 flex items-center justify-center text-zinc-600 flex-shrink-0">
-                                <Package className="w-5 h-5" />
+                  <div className="px-5 pb-5 pt-3 border-t border-zinc-800/60 bg-zinc-950/40 space-y-3.5">
+                    
+                    {/* Stepper do Fluxo de Manufatura 3D */}
+                    <div className="bg-zinc-900/90 border border-zinc-800 p-3.5 rounded-2xl">
+                      <div className="flex items-center justify-between mb-2.5">
+                        <span className="text-[10px] font-black uppercase text-zinc-400 tracking-wider flex items-center gap-1.5">
+                          <span>Fluxo da Oficina 3D</span>
+                          <span className="text-zinc-600">•</span>
+                          <span className="text-emerald-400 font-bold">{getStatusConfig(order.status).label}</span>
+                        </span>
+                        <span className="text-[10px] text-zinc-500">Toque em qualquer etapa para avançar</span>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-6 gap-1.5">
+                        {STATUS_LIST.filter(s => s.key !== OrderStatus.CANCELLED).map((st) => {
+                          const currentNorm = normalizeOrderStatus(order.status);
+                          const isCurrent = currentNorm === st.key;
+                          const currentStepOrder = getStatusConfig(currentNorm).stepOrder;
+                          const isPassed = currentStepOrder > st.stepOrder;
+
+                          return (
+                            <button
+                              key={st.key}
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                updateStatus(order.id, st.key);
+                              }}
+                              className={`p-2 rounded-xl text-center border transition-all text-xs font-bold flex flex-col items-center gap-1 ${
+                                isCurrent 
+                                  ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300 ring-2 ring-emerald-500/30' 
+                                  : isPassed
+                                  ? 'bg-zinc-800/80 border-zinc-700/80 text-zinc-300 hover:border-zinc-500'
+                                  : 'bg-zinc-950/80 border-zinc-800 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300'
+                              }`}
+                            >
+                              <span className="text-base">{st.emoji}</span>
+                              <span className="text-[10px] font-bold leading-tight">{st.shortLabel}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Itens da Encomenda */}
+                    <div>
+                      <p className="text-[10px] uppercase font-bold text-zinc-500 mb-2">Itens da Encomenda:</p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+                        {(order.items || []).map((item, idx) => {
+                          const part = parts.find(p => p.id === item.partId);
+                          const itemName = item.name || part?.name || 'Peça';
+                          return (
+                            <div key={idx} className="flex items-center gap-3 p-2.5 rounded-xl bg-zinc-900 border border-zinc-800">
+                              {part?.imageUrl ? (
+                                <img src={part.imageUrl} className="w-10 h-10 rounded-lg object-cover flex-shrink-0" />
+                              ) : (
+                                <div className="w-10 h-10 rounded-lg bg-zinc-800 flex items-center justify-center text-zinc-600 flex-shrink-0">
+                                  <Package className="w-5 h-5" />
+                                </div>
+                              )}
+                              <div className="flex-1 truncate">
+                                <p className="text-xs font-bold text-zinc-200 truncate">{itemName}</p>
+                                <p className="text-[10px] text-zinc-500">{item.quantity}x {formatCurrency(item.unitPrice)}</p>
                               </div>
-                            )}
-                            <div className="flex-1 truncate">
-                              <p className="text-xs font-bold text-zinc-200 truncate">{itemName}</p>
-                              <p className="text-[10px] text-zinc-500">{item.quantity}x {formatCurrency(item.unitPrice)}</p>
+                              <span className="text-xs font-black text-emerald-400">
+                                {formatCurrency(item.quantity * item.unitPrice)}
+                              </span>
                             </div>
-                            <span className="text-xs font-black text-emerald-400">
-                              {formatCurrency(item.quantity * item.unitPrice)}
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Detalhamento Financeiro e Lucro Líquido Real (pricingCalculator) */}
+                    {(() => {
+                      const orderQty = (order.items || []).reduce((sum, item) => sum + Number(item.quantity || 1), 0);
+                      const orderSub = (order.items || []).reduce((sum, item) => sum + (Number(item.unitPrice || 0) * Number(item.quantity || 1)), 0);
+                      const details = order.detalhesPrecificacao || calculateSalePrice({
+                        custoProducao: (order.items || []).reduce((sum, item) => {
+                          const part = parts.find(p => p.id === item.partId);
+                          if (!part) return sum + (item.unitPrice * 0.4 * item.quantity);
+                          const costInfo = calculatePartCosts(part, filaments, printers, settings);
+                          return sum + (costInfo.totalCost * item.quantity);
+                        }, 0),
+                        precoTabelaOriginal: orderSub,
+                        quantidade: Math.max(1, orderQty),
+                        embalagem: order.custosFinanceiros?.embalagem ?? settings.defaultPackagingCost ?? 2.50,
+                        embalagemPorUnidade: order.custosFinanceiros?.embalagemPorUnidade ?? true,
+                        outrosCustos: order.custosFinanceiros?.outrosCustos ?? settings.defaultOtherCosts ?? 0.00,
+                        taxaPagamento: order.custosFinanceiros?.taxaPagamento ?? (order.paymentMethod === PaymentMethod.CARD ? 3.99 : 0),
+                        comissaoMarketplace: order.custosFinanceiros?.comissaoMarketplace ?? 0,
+                        imposto: order.custosFinanceiros?.imposto ?? 6,
+                        desconto: order.discount || 0,
+                        repassarTaxas: order.custosFinanceiros?.repassarTaxas ?? false
+                      });
+
+                      return (
+                        <div className={`p-3.5 rounded-2xl border space-y-2 text-xs transition ${
+                          details.alertaPrejuizo
+                            ? 'bg-red-500/10 border-red-500/50 text-red-200'
+                            : details.alertaMargemBaixa
+                            ? 'bg-amber-500/10 border-amber-500/40 text-amber-200'
+                            : 'bg-zinc-950/80 border-zinc-800 text-zinc-300'
+                        }`}>
+                          <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider flex-wrap gap-2">
+                            <span className="flex items-center gap-1.5 text-emerald-400">
+                              <Calculator className="w-3.5 h-3.5" />
+                              Detalhamento Financeiro & Lucro Líquido Real
                             </span>
+                            <div className="flex items-center gap-2">
+                              {details.alertaPrejuizo && (
+                                <span className="text-[10px] bg-red-500 text-white px-2 py-0.5 rounded-full font-black animate-pulse">
+                                  ⚠️ PREJUÍZO
+                                </span>
+                              )}
+                              <span className={`font-mono font-black ${
+                                details.lucroLiquido < 0 ? 'text-red-400' : 'text-emerald-400'
+                              }`}>
+                                Lucro Real: {formatCurrency(details.lucroLiquido)} ({details.margemEfetiva}%)
+                              </span>
+                            </div>
                           </div>
-                        );
-                      })}
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px] text-zinc-400 pt-1 border-t border-zinc-800/60">
+                            <div>Custo Produção 3D: <strong className="text-zinc-200 font-mono">{formatCurrency(details.custoProducao)}</strong></div>
+                            <div>Embalagem: <strong className="text-zinc-200 font-mono">{formatCurrency(details.embalagem)}</strong></div>
+                            <div>Taxas + Impostos: <strong className="text-zinc-200 font-mono">{formatCurrency(details.totalTaxasValor)}</strong></div>
+                            <div>Custo Base Total: <strong className="text-zinc-200 font-mono">{formatCurrency(details.custoBase)}</strong></div>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-zinc-800/60">
+                      <div className="text-[11px] text-zinc-400">
+                        Total com desconto: <strong className="text-emerald-400 font-mono text-xs">{formatCurrency(order.totalValue)}</strong>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setIsPricingCalculatorOpen(true);
+                          }}
+                          className="px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-bold flex items-center gap-1.5 transition-colors border border-zinc-700"
+                        >
+                          <Calculator className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>Simular na Calculadora</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setQuoteModalOrder(order);
+                          }}
+                          className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold flex items-center gap-1.5 transition-colors shadow-sm"
+                        >
+                          <FileText className="w-3.5 h-3.5" />
+                          <span>Gerar Orçamento Técnico (PDF)</span>
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -963,20 +1272,61 @@ export const Orders: React.FC = () => {
                 </div>
               )}
 
-              {/* 4. PAGAMENTO E DESCONTO */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+              {/* 4. STATUS NO FLUXO DE MANUFATURA 3D */}
+              <div className="space-y-2.5 pt-2 border-t border-zinc-800/80">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-black uppercase text-zinc-400 tracking-wider flex items-center gap-1.5">
+                    <span>4. Status de Manufatura 3D:</span>
+                    <span className="text-emerald-400 font-bold">{getStatusConfig(orderForm.status).label}</span>
+                  </label>
+                  <span className="text-[10px] text-zinc-500">Selecione o estágio atual da oficina</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {STATUS_LIST.map(st => {
+                    const isSelected = normalizeOrderStatus(orderForm.status) === st.key;
+                    return (
+                      <button
+                        key={st.key}
+                        type="button"
+                        onClick={() => setOrderForm({ ...orderForm, status: st.key })}
+                        className={`p-2.5 rounded-xl border text-left transition-all flex items-center gap-2 ${
+                          isSelected
+                            ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300 ring-2 ring-emerald-500/30 shadow-sm'
+                            : 'bg-zinc-800/40 border-zinc-800 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+                        }`}
+                      >
+                        <span className="text-lg flex-shrink-0">{st.emoji}</span>
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold truncate leading-tight">{st.shortLabel}</p>
+                          <p className="text-[9px] opacity-70 truncate">{st.description.split(',')[0]}</p>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* 5. FORMA DE PAGAMENTO E DESCONTO */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-zinc-800/80">
                 <div>
-                  <label className="text-xs font-black uppercase text-zinc-400 tracking-wider block mb-2">Forma de Pagamento</label>
+                  <label className="text-xs font-black uppercase text-zinc-400 tracking-wider block mb-2">5. Forma de Pagamento</label>
                   <div className="grid grid-cols-3 gap-2">
                     {[
-                      { id: PaymentMethod.PIX, label: 'Pix', icon: <QrCode className="w-4 h-4" /> },
+                      { id: PaymentMethod.PIX, label: 'Pix (0%)', icon: <QrCode className="w-4 h-4" /> },
                       { id: PaymentMethod.CARD, label: 'Cartão', icon: <CreditCard className="w-4 h-4" /> },
                       { id: PaymentMethod.CASH, label: 'Dinheiro', icon: <Banknote className="w-4 h-4" /> }
                     ].map(pm => (
                       <button
                         type="button"
                         key={pm.id}
-                        onClick={() => setOrderForm({ ...orderForm, paymentMethod: pm.id })}
+                        onClick={() => {
+                          setOrderForm({ ...orderForm, paymentMethod: pm.id });
+                          if (pm.id === PaymentMethod.CARD) {
+                            setFinancialForm(prev => ({ ...prev, taxaPagamento: prev.taxaPagamento || 3.99 }));
+                          } else {
+                            setFinancialForm(prev => ({ ...prev, taxaPagamento: 0 }));
+                          }
+                        }}
                         className={`p-3 rounded-xl border flex flex-col items-center gap-1 text-xs font-bold transition-all ${
                           orderForm.paymentMethod === pm.id
                             ? 'bg-emerald-500/20 border-emerald-500 text-emerald-400 ring-1 ring-emerald-500/50'
@@ -991,20 +1341,235 @@ export const Orders: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="text-xs font-black uppercase text-zinc-400 tracking-wider block mb-2">Desconto (R$)</label>
-                  <input 
-                    type="number" 
-                    step="0.01"
-                    min="0"
-                    placeholder="0,00"
-                    className="w-full bg-zinc-800 border border-zinc-700 rounded-xl p-3 text-lg font-bold outline-none focus:border-emerald-500 text-white"
-                    value={orderForm.discount || ''}
-                    onChange={e => setOrderForm({ ...orderForm, discount: Number(e.target.value) })}
-                  />
+                  <label className="text-xs font-black uppercase text-zinc-400 tracking-wider block mb-2">Desconto Comercial (R$)</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 font-bold text-sm">R$</span>
+                    <input 
+                      type="number" 
+                      step="0.01"
+                      min="0"
+                      placeholder="0,00"
+                      className="w-full bg-zinc-800 border border-zinc-700 rounded-xl pl-9 pr-3 py-2.5 text-base font-bold outline-none focus:border-emerald-500 text-white"
+                      value={orderForm.discount || ''}
+                      onChange={e => setOrderForm({ ...orderForm, discount: Math.max(0, Number(e.target.value) || 0) })}
+                    />
+                  </div>
                 </div>
               </div>
 
-              {/* 5. RESUMO FINANCEIRO */}
+              {/* 6. CALCULADORA FINANCEIRA AVANÇADA DE VENDA (pricingCalculator) */}
+              <div className="p-4 rounded-2xl bg-zinc-950 border border-zinc-800 space-y-4">
+                <div className="flex items-center justify-between flex-wrap gap-2 pb-2 border-b border-zinc-800/80">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                      <Calculator className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-black uppercase tracking-wider text-white">
+                        6. Calculadora Financeira de Venda (pricingCalculator)
+                      </h4>
+                      <p className="text-[10px] text-zinc-400">Custos de embalagem, taxas de pagamento, comissão e impostos</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span className={`text-xs font-mono font-black px-2.5 py-1 rounded-xl border ${
+                      pricingBreakdown.alertaPrejuizo
+                        ? 'bg-red-500/20 text-red-300 border-red-500/50 animate-pulse'
+                        : pricingBreakdown.alertaMargemBaixa
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                        : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                    }`}>
+                      {pricingBreakdown.alertaPrejuizo ? '⚠️ PREJUÍZO: ' : 'Lucro Líquido: '}
+                      {formatCurrency(pricingBreakdown.lucroLiquido)} ({pricingBreakdown.margemEfetiva}%)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowAdvancedPricing(!showAdvancedPricing)}
+                      className="text-xs font-bold text-zinc-400 hover:text-white px-2.5 py-1 rounded-lg bg-zinc-800/60 border border-zinc-700 flex items-center gap-1"
+                    >
+                      <SlidersHorizontal className="w-3 h-3 text-emerald-400" />
+                      <span>{showAdvancedPricing ? 'Recolher' : 'Ajustar Taxas'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Banner Explícito de Prejuízo */}
+                {pricingBreakdown.alertaPrejuizo && (
+                  <div className="p-3.5 rounded-xl bg-red-500/15 border border-red-500/60 text-red-200 text-xs flex items-start gap-3 animate-pulse">
+                    <ShieldAlert className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <strong className="font-black text-red-400 uppercase tracking-wide block">
+                        Alerta de Prejuízo Operacional:
+                      </strong>
+                      <span>
+                        Esta venda está dando <strong className="text-white underline">{formatCurrency(Math.abs(pricingBreakdown.lucroLiquido))}</strong> de prejuízo real após deduzir custos de fabricação 3D, embalagem, impostos e taxas. Preço mínimo sugerido para zerar custos: <strong className="text-white font-mono">{formatCurrency(pricingBreakdown.custoBase / (1 - (pricingBreakdown.totalTaxasPercentual / 100)))}</strong>.
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Banner de Margem Baixa */}
+                {pricingBreakdown.alertaMargemBaixa && !pricingBreakdown.alertaPrejuizo && (
+                  <div className="p-3 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-200 text-xs flex items-center gap-2.5">
+                    <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
+                    <span>
+                      <strong>Margem apertada ({pricingBreakdown.margemEfetiva}%):</strong> Lucro líquido de {formatCurrency(pricingBreakdown.lucroLiquido)}. Qualquer falha de impressão consumirá a margem.
+                    </span>
+                  </div>
+                )}
+
+                {/* Parâmetros Configuráveis da Venda */}
+                {showAdvancedPricing && (
+                  <div className="p-4 bg-zinc-900/90 rounded-2xl border border-zinc-800 space-y-3.5 animate-in fade-in duration-200">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[11px] font-bold text-zinc-300 block mb-1">
+                          Custo de Embalagem (R$):
+                        </label>
+                        <div className="relative">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 text-xs font-bold">R$</span>
+                          <input
+                            type="number"
+                            step="0.10"
+                            min="0"
+                            className="w-full bg-zinc-800 border border-zinc-700 rounded-xl pl-8 pr-3 py-2 text-xs font-bold text-white outline-none focus:border-emerald-500"
+                            value={financialForm.embalagem}
+                            onChange={e => setFinancialForm({ ...financialForm, embalagem: Math.max(0, Number(e.target.value) || 0) })}
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="text-[11px] font-bold text-zinc-300 block mb-1">
+                          Outros Custos / Insumos (R$):
+                        </label>
+                        <div className="relative">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 text-xs font-bold">R$</span>
+                          <input
+                            type="number"
+                            step="0.10"
+                            min="0"
+                            className="w-full bg-zinc-800 border border-zinc-700 rounded-xl pl-8 pr-3 py-2 text-xs font-bold text-white outline-none focus:border-emerald-500"
+                            value={financialForm.outrosCustos}
+                            onChange={e => setFinancialForm({ ...financialForm, outrosCustos: Math.max(0, Number(e.target.value) || 0) })}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-zinc-800">
+                      <div>
+                        <div className="flex justify-between text-[11px] font-bold text-zinc-300 mb-1">
+                          <span>Taxa Pagamento:</span>
+                          <span className="text-emerald-400 font-mono">{financialForm.taxaPagamento}%</span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-1 mb-1.5">
+                          <button type="button" onClick={() => setFinancialForm({ ...financialForm, taxaPagamento: 0 })} className="p-1 rounded bg-zinc-800 text-[10px] text-zinc-400 hover:text-white border border-zinc-700">0% Pix</button>
+                          <button type="button" onClick={() => setFinancialForm({ ...financialForm, taxaPagamento: 3.99 })} className="p-1 rounded bg-zinc-800 text-[10px] text-zinc-400 hover:text-white border border-zinc-700">3.99%</button>
+                          <button type="button" onClick={() => setFinancialForm({ ...financialForm, taxaPagamento: 5.50 })} className="p-1 rounded bg-zinc-800 text-[10px] text-zinc-400 hover:text-white border border-zinc-700">5.5% 3x</button>
+                        </div>
+                        <input
+                          type="number"
+                          step="0.1"
+                          min="0"
+                          className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-2.5 py-1.5 text-xs font-bold text-white outline-none"
+                          value={financialForm.taxaPagamento}
+                          onChange={e => setFinancialForm({ ...financialForm, taxaPagamento: Math.max(0, Number(e.target.value) || 0) })}
+                        />
+                      </div>
+
+                      <div>
+                        <div className="flex justify-between text-[11px] font-bold text-zinc-300 mb-1">
+                          <span>Comissão Marketplace:</span>
+                          <span className="text-cyan-400 font-mono">{financialForm.comissaoMarketplace}%</span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-1 mb-1.5">
+                          <button type="button" onClick={() => setFinancialForm({ ...financialForm, comissaoMarketplace: 0 })} className="p-1 rounded bg-zinc-800 text-[10px] text-zinc-400 hover:text-white border border-zinc-700">0% Dir.</button>
+                          <button type="button" onClick={() => setFinancialForm({ ...financialForm, comissaoMarketplace: 14 })} className="p-1 rounded bg-zinc-800 text-[10px] text-zinc-400 hover:text-white border border-zinc-700">14% Shp</button>
+                          <button type="button" onClick={() => setFinancialForm({ ...financialForm, comissaoMarketplace: 18 })} className="p-1 rounded bg-zinc-800 text-[10px] text-zinc-400 hover:text-white border border-zinc-700">18% ML</button>
+                        </div>
+                        <input
+                          type="number"
+                          step="0.5"
+                          min="0"
+                          className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-2.5 py-1.5 text-xs font-bold text-white outline-none"
+                          value={financialForm.comissaoMarketplace}
+                          onChange={e => setFinancialForm({ ...financialForm, comissaoMarketplace: Math.max(0, Number(e.target.value) || 0) })}
+                        />
+                      </div>
+
+                      <div>
+                        <div className="flex justify-between text-[11px] font-bold text-zinc-300 mb-1">
+                          <span>Impostos:</span>
+                          <span className="text-amber-400 font-mono">{financialForm.imposto}%</span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-1 mb-1.5">
+                          <button type="button" onClick={() => setFinancialForm({ ...financialForm, imposto: 0 })} className="p-1 rounded bg-zinc-800 text-[10px] text-zinc-400 hover:text-white border border-zinc-700">0% MEI</button>
+                          <button type="button" onClick={() => setFinancialForm({ ...financialForm, imposto: 6 })} className="p-1 rounded bg-zinc-800 text-[10px] text-zinc-400 hover:text-white border border-zinc-700">6% Simp</button>
+                          <button type="button" onClick={() => setFinancialForm({ ...financialForm, imposto: 4 })} className="p-1 rounded bg-zinc-800 text-[10px] text-zinc-400 hover:text-white border border-zinc-700">4% Com</button>
+                        </div>
+                        <input
+                          type="number"
+                          step="0.5"
+                          min="0"
+                          className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-2.5 py-1.5 text-xs font-bold text-white outline-none"
+                          value={financialForm.imposto}
+                          onChange={e => setFinancialForm({ ...financialForm, imposto: Math.max(0, Number(e.target.value) || 0) })}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Demonstrativo Resumido do Cálculo */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] bg-zinc-900/60 p-3 rounded-xl border border-zinc-800/80">
+                  <div>
+                    <span className="text-zinc-500 block">Preço das Peças (Catálogo):</span>
+                    <strong className="text-zinc-200 font-mono">{formatCurrency(orderSubtotal)}</strong>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block">Custo Fabril 3D:</span>
+                    <strong className="text-zinc-200 font-mono">{formatCurrency(pricingBreakdown.custoProducao)}</strong>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block">Embalagem + Insumos:</span>
+                    <strong className="text-zinc-200 font-mono">{formatCurrency(pricingBreakdown.embalagem + pricingBreakdown.outrosCustos)}</strong>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block">Taxas + Impostos Retidos:</span>
+                    <span className="text-red-400 font-mono font-bold">- {formatCurrency(pricingBreakdown.totalTaxasValor)}</span>
+                  </div>
+                </div>
+
+                <div className="p-3 bg-zinc-900/40 rounded-xl border border-zinc-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                  <div className="text-[11px] text-zinc-400">
+                    <p className="flex items-center gap-1.5 font-medium text-zinc-300">
+                      <span>💡</span>
+                      <span>O preço das peças já possui o lucro de catálogo. A calculadora audita quanto sobra líquido no bolso.</span>
+                    </p>
+                    {pricingBreakdown.totalTaxasPercentual > 0 && (
+                      <p className="text-[10px] text-zinc-500 mt-0.5">
+                        Para repassar as taxas de {pricingBreakdown.totalTaxasPercentual}% no anúncio do marketplace: Preço sugerido <strong className="text-emerald-400">{formatCurrency(pricingBreakdown.precoSugeridoMarketplace)}</strong>
+                      </p>
+                    )}
+                  </div>
+
+                  {pricingBreakdown.totalTaxasPercentual > 0 && orderForm.items.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={applySuggestedPriceToItems}
+                      className="px-3 py-1.5 bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/40 text-cyan-300 font-bold text-xs rounded-xl transition flex items-center gap-1.5 flex-shrink-0"
+                      title="Ajusta o valor dos itens para que as taxas de marketplace sejam absorvidas no preço final"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Repassar Taxas nos Itens</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* 7. RESUMO FINANCEIRO FINAL */}
               <div className="bg-zinc-950 p-4 rounded-2xl border border-zinc-800 space-y-2">
                 <div className="flex justify-between text-xs text-zinc-400">
                   <span>Subtotal dos itens:</span>
@@ -1017,7 +1582,7 @@ export const Orders: React.FC = () => {
                   </div>
                 )}
                 <div className="flex justify-between text-base font-black text-white pt-2 border-t border-zinc-800">
-                  <span>Total Final:</span>
+                  <span>Total Final a Cobrar:</span>
                   <span className="text-2xl text-emerald-400">{formatCurrency(orderTotal)}</span>
                 </div>
               </div>
@@ -1042,6 +1607,49 @@ export const Orders: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* MODAL CALCULADORA FINANCEIRA AVANÇADA STANDALONE */}
+      <PricingCalculatorModal
+        isOpen={isPricingCalculatorOpen}
+        onClose={() => setIsPricingCalculatorOpen(false)}
+        initialItems={orderForm.items.map(i => ({ partId: i.partId, quantity: i.quantity }))}
+        initialFinancials={financialForm}
+        onApplyToOrder={({ financials, selectedParts }) => {
+          setFinancialForm(financials);
+          const totalTaxas = (financials.imposto + financials.taxaPagamento + financials.comissaoMarketplace) / 100;
+          const fatorRepasse = totalTaxas < 1 && financials.repassarTaxas ? (1 / (1 - totalTaxas)) : 1;
+
+          if (selectedParts && selectedParts.length > 0) {
+            const newItems: OrderItem[] = selectedParts.map(sp => {
+              const part = parts.find(p => p.id === sp.partId);
+              const existingItem = orderForm.items.find(i => i.partId === sp.partId);
+              const partCost = part ? calculatePartCosts(part, filaments, printers, settings) : null;
+              const basePrice = partCost?.suggestedPrice || existingItem?.unitPrice || 0;
+              const unitPrice = Number((basePrice * fatorRepasse).toFixed(2));
+              return {
+                partId: sp.partId,
+                name: part?.name || existingItem?.name || 'Peça do Catálogo',
+                quantity: sp.quantity,
+                unitPrice: unitPrice > 0 ? unitPrice : basePrice
+              };
+            });
+            setOrderForm(prev => ({ ...prev, items: newItems }));
+          } else if (orderForm.items.length > 0) {
+            setOrderForm(prev => ({
+              ...prev,
+              items: prev.items.map(i => {
+                const part = parts.find(p => p.id === i.partId);
+                const basePrice = part ? calculatePartCosts(part, filaments, printers, settings).suggestedPrice : (Number(i.unitPrice) || 0);
+                return {
+                  ...i,
+                  unitPrice: Math.max(0.01, Number((basePrice * fatorRepasse).toFixed(2)))
+                };
+              })
+            }));
+          }
+          setIsModalOpen(true);
+        }}
+      />
 
       {/* MODAL DE COMPROVANTE / CUPOM DE PRODUÇÃO */}
       {receiptOrder && (
@@ -1124,13 +1732,25 @@ export const Orders: React.FC = () => {
             </div>
 
             {/* Ações do Comprovante */}
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap sm:flex-nowrap">
+              <button 
+                onClick={() => {
+                  const o = receiptOrder;
+                  setReceiptOrder(null);
+                  setQuoteModalOrder(o);
+                }}
+                className="py-3 px-3.5 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 transition shadow-sm"
+                title="Visualizar Proposta Comercial em PDF Técnico"
+              >
+                <FileText className="w-4 h-4" />
+                <span>Orçamento PDF</span>
+              </button>
               <button 
                 onClick={() => sendWhatsAppMessage(receiptOrder)}
                 className="flex-1 py-3 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold rounded-xl text-xs flex items-center justify-center gap-2 transition"
               >
                 <MessageCircle className="w-4 h-4" />
-                Enviar no WhatsApp
+                WhatsApp
               </button>
               <button 
                 onClick={() => window.print()}
@@ -1142,6 +1762,18 @@ export const Orders: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* MODAL DE ORÇAMENTO COMERCIAL EM PDF */}
+      {quoteModalOrder && (
+        <QuotePdfModal
+          order={quoteModalOrder}
+          customer={customers.find(c => c.id === quoteModalOrder.customerId)}
+          parts={parts}
+          filaments={filaments}
+          settings={settings}
+          onClose={() => setQuoteModalOrder(null)}
+        />
       )}
     </div>
   );

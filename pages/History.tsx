@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { OrderStatus } from '../types';
+import { normalizeOrderStatus } from '../utils/statusUtils';
 import { supabase } from '../services/supabase';
 import { formatCurrency } from '../constants';
 import { Archive, Search, Trash2, Calendar, ShoppingBag, RotateCcw } from 'lucide-react';
@@ -11,7 +12,7 @@ const History: React.FC = () => {
 
   const completedOrders = useMemo(() => {
     return orders.filter(o => {
-      if (o.status !== OrderStatus.DELIVERED) return false;
+      if (normalizeOrderStatus(o.status) !== OrderStatus.DELIVERED) return false;
       const customer = customers.find(c => c.id === o.customerId);
       return customer?.name.toLowerCase().includes(searchTerm.toLowerCase());
     }).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());

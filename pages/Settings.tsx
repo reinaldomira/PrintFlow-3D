@@ -1,7 +1,11 @@
-
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { LogOut, Plus, Trash2, Database, Copy, AlertCircle, Check, User as UserIcon, Tag, Layers, Zap, Image as ImageIcon } from 'lucide-react';
+import { BusinessInfo } from '../types';
+import { 
+  LogOut, Plus, Trash2, Database, Copy, AlertCircle, Check, 
+  User as UserIcon, Tag, Layers, Zap, Image as ImageIcon,
+  Building2, Upload, Info, Cloud, CheckCircle2, Save, Calculator
+} from 'lucide-react';
 import { PWAInstallButton } from '../components/PWAInstallButton';
 
 const Settings: React.FC = () => {
@@ -9,6 +13,41 @@ const Settings: React.FC = () => {
   const [newBrand, setNewBrand] = useState('');
   const [newCategory, setNewCategory] = useState('');
   const [copiedSql, setCopiedSql] = useState(false);
+  const [copiedSyncSql, setCopiedSyncSql] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [businessForm, setBusinessForm] = useState<BusinessInfo>(() => settings.businessInfo || {});
+  const [isDirty, setIsDirty] = useState(false);
+
+  // Sincroniza formulário local quando dados chegam da nuvem (ex: outro dispositivo ou login)
+  React.useEffect(() => {
+    if (!isDirty && settings.businessInfo) {
+      setBusinessForm(settings.businessInfo);
+    }
+  }, [settings.businessInfo, isDirty]);
+
+  // Sincronização automática em segundo plano (autosave debounced)
+  React.useEffect(() => {
+    if (!isDirty) return;
+
+    const timer = setTimeout(() => {
+      saveBusinessData(businessForm);
+    }, 1500);
+
+    return () => clearTimeout(timer);
+  }, [businessForm, isDirty]);
+
+  const businessSyncSql = `ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS "businessInfo" jsonb DEFAULT '{}'::jsonb;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS business_info jsonb DEFAULT '{}'::jsonb;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS "hourlyLaborRate" numeric DEFAULT 25;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS "hourlyMaintenanceCost" numeric DEFAULT 1.5;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_labor_rate numeric DEFAULT 25;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_maintenance_cost numeric DEFAULT 1.5;`;
+
+  const copySyncSql = () => {
+    navigator.clipboard.writeText(businessSyncSql);
+    setCopiedSyncSql(true);
+    setTimeout(() => setCopiedSyncSql(false), 2000);
+  };
 
   const sqlScript = `
 -- SCRIPT DE REPARAÇÃO PRINTFLOW v2.6 (FOTOS + RECEITAS)
@@ -89,7 +128,9 @@ CREATE TABLE IF NOT EXISTS public.settings (
     "hourlyLaborRate" numeric DEFAULT 25,
     "hourlyMaintenanceCost" numeric DEFAULT 1.5,
     "filamentBrands" text[] DEFAULT ARRAY['3D Prime', 'Creality'],
-    categories text[] DEFAULT ARRAY['Chaveiro', 'Organizador', 'Decoração']
+    categories text[] DEFAULT ARRAY['Chaveiro', 'Organizador', 'Decoração'],
+    "businessInfo" jsonb DEFAULT '{}'::jsonb,
+    business_info jsonb DEFAULT '{}'::jsonb
 );
 
 -- 6. TABELA CLIENTES
@@ -103,16 +144,78 @@ CREATE TABLE IF NOT EXISTS public.customers (
     "createdAt" timestamptz DEFAULT now()
 );
 
--- GARANTIA DE COLUNAS ADICIONAIS
+-- GARANTIA DE COLUNAS ADICIONAIS E SINCRONIZAÇÃO ENTRE DISPOSITIVOS
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS discount numeric DEFAULT 0;
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS "paymentMethod" text DEFAULT 'Pix';
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS payments jsonb DEFAULT '[]'::jsonb;
 ALTER TABLE public.parts ADD COLUMN IF NOT EXISTS "printerId" text;
 ALTER TABLE public.parts ADD COLUMN IF NOT EXISTS "postProcessingTime" numeric DEFAULT 0;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS "businessInfo" jsonb DEFAULT '{}'::jsonb;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS business_info jsonb DEFAULT '{}'::jsonb;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS "hourlyLaborRate" numeric DEFAULT 25;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS "hourlyMaintenanceCost" numeric DEFAULT 1.5;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_labor_rate numeric DEFAULT 25;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_maintenance_cost numeric DEFAULT 1.5;
 `.trim();
 
   const handleUpdate = (key: keyof typeof settings, value: any) => {
     setSettings({ ...settings, [key]: value });
+  };
+
+  const handleFieldChange = (field: keyof BusinessInfo, value: string) => {
+    setIsDirty(true);
+    setBusinessForm(prev => ({
+      ...prev,
+      [field]: value
+    }));
+  };
+
+  const saveBusinessData = async (dataToSave?: BusinessInfo) => {
+    const data = dataToSave || businessForm;
+    setSaveStatus('saving');
+    const ok = await setSettings({
+      ...settings,
+      businessInfo: data
+    });
+    if (ok) {
+      setIsDirty(false);
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus('idle'), 3000);
+    } else {
+      setSaveStatus('error');
+      setTimeout(() => setSaveStatus('idle'), 5000);
+    }
+  };
+
+  const handleSaveBusinessCloud = async () => {
+    await saveBusinessData(businessForm);
+  };
+
+  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      alert('A imagem do logotipo deve ter no máximo 2MB.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const base64 = event.target?.result as string;
+      if (base64) {
+        const updated = { ...businessForm, logoUrl: base64 };
+        setBusinessForm(updated);
+        setIsDirty(true);
+        saveBusinessData(updated);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleRemoveLogo = () => {
+    const updated = { ...businessForm, logoUrl: '' };
+    setBusinessForm(updated);
+    setIsDirty(true);
+    saveBusinessData(updated);
   };
 
   const addItem = (key: 'filamentBrands' | 'categories', value: string, setter: (v: string) => void) => {
@@ -194,6 +297,254 @@ ALTER TABLE public.parts ADD COLUMN IF NOT EXISTS "postProcessingTime" numeric D
         </div>
       </div>
 
+      {/* Dados Comerciais do Orçamento */}
+      <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 space-y-6">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <Building2 className="w-4 h-4 text-cyan-400" />
+            <h3 className="font-black uppercase text-xs tracking-widest text-zinc-300">
+              Dados comerciais do orçamento
+            </h3>
+          </div>
+          <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 flex items-center gap-1.5">
+            <Cloud className="w-3 h-3" /> Sincronização em Nuvem (Multi-Dispositivos)
+          </span>
+        </div>
+
+        {/* Banner de Sincronização em Nuvem Multi-Dispositivos */}
+        <div className="bg-cyan-500/10 border border-cyan-500/30 rounded-2xl p-4 space-y-3">
+          <div className="flex items-start gap-3">
+            <Cloud className="w-5 h-5 text-cyan-400 flex-shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="font-bold text-cyan-300 text-xs sm:text-sm">
+                Sincronização Automática Ativa (PC & Celular)
+              </p>
+              <p className="text-zinc-400 leading-relaxed text-[11px]">
+                Ao salvar os dados abaixo, eles são gravados no Supabase vinculados à sua conta. Qualquer alteração feita aqui no computador será carregada automaticamente no celular, e vice-versa.
+              </p>
+            </div>
+          </div>
+          <div className="pt-2 border-t border-cyan-500/20 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <span className="text-[10px] text-zinc-400 font-medium">
+              Necessário coluna <code className="text-cyan-300 bg-zinc-950 px-1 py-0.5 rounded">business_info</code> na tabela settings do Supabase.
+            </span>
+            <button
+              type="button"
+              onClick={copySyncSql}
+              className="text-[11px] font-bold text-cyan-400 hover:text-cyan-300 bg-zinc-950/80 hover:bg-zinc-950 px-3 py-1.5 rounded-xl border border-cyan-500/30 flex items-center justify-center gap-1.5 transition-all self-start sm:self-auto"
+            >
+              {copiedSyncSql ? (
+                <>
+                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Comando SQL Copiado!</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Copiar SQL de Sincronização</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Logotipo */}
+        <div className="space-y-3">
+          <label className="block text-[10px] font-black uppercase text-zinc-500">
+            Logotipo da Empresa
+          </label>
+          <div className="flex flex-col sm:flex-row items-center gap-4 p-4 bg-zinc-800/60 border border-zinc-700/60 rounded-2xl">
+            <div className="w-20 h-20 rounded-2xl bg-zinc-800 border-2 border-dashed border-zinc-700 flex items-center justify-center overflow-hidden flex-shrink-0">
+              {businessForm.logoUrl ? (
+                <img 
+                  src={businessForm.logoUrl} 
+                  alt="Logo" 
+                  className="w-full h-full object-contain p-1"
+                />
+              ) : (
+                <ImageIcon className="w-8 h-8 text-zinc-600" />
+              )}
+            </div>
+            <div className="flex-1 space-y-2 text-center sm:text-left w-full">
+              <div className="flex flex-wrap gap-2 justify-center sm:justify-start">
+                <label className="cursor-pointer bg-zinc-700 hover:bg-zinc-600 text-zinc-200 px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition-all">
+                  <Upload className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Enviar Imagem</span>
+                  <input 
+                    type="file" 
+                    accept="image/*" 
+                    className="hidden" 
+                    onChange={handleLogoUpload}
+                  />
+                </label>
+                {businessForm.logoUrl && (
+                  <button
+                    type="button"
+                    onClick={handleRemoveLogo}
+                    className="bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Remover</span>
+                  </button>
+                )}
+              </div>
+              <input
+                type="text"
+                placeholder="Ou cole a URL da imagem (https://...)"
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-xs font-medium text-zinc-200 focus:border-cyan-500 outline-none transition-colors"
+                value={businessForm.logoUrl || ''}
+                onChange={e => handleFieldChange('logoUrl', e.target.value)}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Campos de Dados Comerciais */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="space-y-1.5 sm:col-span-2">
+            <label className="block text-[10px] font-black uppercase text-zinc-500">
+              Nome da Empresa ou Marca
+            </label>
+            <input
+              type="text"
+              placeholder="Ex: PrintFlow 3D Studio"
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm font-bold text-zinc-100 focus:border-cyan-500 outline-none transition-colors"
+              value={businessForm.companyName || ''}
+              onChange={e => handleFieldChange('companyName', e.target.value)}
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="block text-[10px] font-black uppercase text-zinc-500">
+              Telefone Comercial
+            </label>
+            <input
+              type="tel"
+              placeholder="(11) 3456-7890"
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm font-bold text-zinc-100 focus:border-cyan-500 outline-none transition-colors"
+              value={businessForm.phone || ''}
+              onChange={e => handleFieldChange('phone', e.target.value)}
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="block text-[10px] font-black uppercase text-zinc-500">
+              WhatsApp
+            </label>
+            <input
+              type="tel"
+              placeholder="(11) 98765-4321"
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm font-bold text-zinc-100 focus:border-cyan-500 outline-none transition-colors"
+              value={businessForm.whatsapp || ''}
+              onChange={e => handleFieldChange('whatsapp', e.target.value)}
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="block text-[10px] font-black uppercase text-zinc-500">
+              Instagram
+            </label>
+            <input
+              type="text"
+              placeholder="@suamarca.3d"
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm font-bold text-zinc-100 focus:border-cyan-500 outline-none transition-colors"
+              value={businessForm.instagram || ''}
+              onChange={e => handleFieldChange('instagram', e.target.value)}
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="block text-[10px] font-black uppercase text-zinc-500">
+              E-mail Comercial
+            </label>
+            <input
+              type="email"
+              placeholder="contato@suamarca.com.br"
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm font-bold text-zinc-100 focus:border-cyan-500 outline-none transition-colors"
+              value={businessForm.email || ''}
+              onChange={e => handleFieldChange('email', e.target.value)}
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="block text-[10px] font-black uppercase text-zinc-500">
+              Site
+            </label>
+            <input
+              type="text"
+              placeholder="www.suamarca.com.br"
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm font-bold text-zinc-100 focus:border-cyan-500 outline-none transition-colors"
+              value={businessForm.website || ''}
+              onChange={e => handleFieldChange('website', e.target.value)}
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="block text-[10px] font-black uppercase text-zinc-500">
+              Cidade e Estado
+            </label>
+            <input
+              type="text"
+              placeholder="São Paulo - SP"
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm font-bold text-zinc-100 focus:border-cyan-500 outline-none transition-colors"
+              value={businessForm.cityState || ''}
+              onChange={e => handleFieldChange('cityState', e.target.value)}
+            />
+          </div>
+
+          <div className="space-y-1.5 sm:col-span-2">
+            <label className="block text-[10px] font-black uppercase text-zinc-500">
+              Endereço Comercial (Opcional)
+            </label>
+            <input
+              type="text"
+              placeholder="Av. Paulista, 1000 - Bela Vista"
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm font-bold text-zinc-100 focus:border-cyan-500 outline-none transition-colors"
+              value={businessForm.address || ''}
+              onChange={e => handleFieldChange('address', e.target.value)}
+            />
+          </div>
+        </div>
+
+        {/* Botão de Salvar e Sincronizar na Nuvem */}
+        <div className="pt-2">
+          <button
+            type="button"
+            onClick={handleSaveBusinessCloud}
+            disabled={saveStatus === 'saving'}
+            className={`w-full py-4 rounded-2xl font-black text-sm flex items-center justify-center gap-2.5 transition-all active:scale-98 shadow-lg ${
+              saveStatus === 'saved'
+                ? 'bg-emerald-500 text-zinc-950 shadow-emerald-500/20'
+                : saveStatus === 'error'
+                  ? 'bg-amber-500 text-zinc-950 shadow-amber-500/20'
+                  : 'bg-cyan-500 hover:bg-cyan-400 text-zinc-950 shadow-cyan-500/20'
+            }`}
+          >
+            {saveStatus === 'saving' ? (
+              <>
+                <Cloud className="w-5 h-5 animate-pulse" />
+                <span>SINCRONIZANDO NA NUVEM...</span>
+              </>
+            ) : saveStatus === 'saved' ? (
+              <>
+                <CheckCircle2 className="w-5 h-5" />
+                <span>DADOS COMERCIAIS SINCRONIZADOS NA NUVEM!</span>
+              </>
+            ) : saveStatus === 'error' ? (
+              <>
+                <AlertCircle className="w-5 h-5" />
+                <span>SALVO NO DISPOSITIVO (RODE O SQL PARA NUVEM)</span>
+              </>
+            ) : (
+              <>
+                <Save className="w-5 h-5" />
+                <span>SALVAR E SINCRONIZAR DADOS COMERCIAIS</span>
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
       {/* Default Costs */}
       <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 space-y-6">
         <div className="flex items-center gap-2 mb-2">
@@ -210,6 +561,69 @@ ALTER TABLE public.parts ADD COLUMN IF NOT EXISTS "postProcessingTime" numeric D
             <label className="block text-[10px] font-black uppercase text-zinc-500">Mão de Obra (R$/h)</label>
             <input type="number" step="0.01" className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 font-bold focus:border-emerald-500 outline-none transition-colors"
               value={settings.hourlyLaborRate} onChange={e => handleUpdate('hourlyLaborRate', Number(e.target.value))} />
+          </div>
+        </div>
+      </div>
+
+      {/* Taxas Comerciais & Custos de Venda Padrão (pricingCalculator) */}
+      <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 space-y-6">
+        <div className="flex items-center gap-2 mb-2">
+          <Calculator className="w-4 h-4 text-emerald-500" />
+          <h3 className="font-black uppercase text-xs tracking-widest text-zinc-400">Taxas e Custos Comerciais Padrão</h3>
+        </div>
+        <p className="text-xs text-zinc-500">
+          Valores base aplicados automaticamente na calculadora avançada de cada nova venda.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="space-y-1.5">
+            <label className="block text-[10px] font-black uppercase text-zinc-400">Embalagem Padrão (R$)</label>
+            <input 
+              type="number" 
+              step="0.01" 
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-2.5 font-bold focus:border-emerald-500 outline-none transition-colors text-white text-sm"
+              value={settings.defaultPackagingCost ?? 2.50} 
+              onChange={e => handleUpdate('defaultPackagingCost', Number(e.target.value))} 
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="block text-[10px] font-black uppercase text-zinc-400">Outros Custos Fixos (R$)</label>
+            <input 
+              type="number" 
+              step="0.01" 
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-2.5 font-bold focus:border-emerald-500 outline-none transition-colors text-white text-sm"
+              value={settings.defaultOtherCosts ?? 0.00} 
+              onChange={e => handleUpdate('defaultOtherCosts', Number(e.target.value))} 
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="block text-[10px] font-black uppercase text-zinc-400">Taxa de Pagamento Padrão (%)</label>
+            <input 
+              type="number" 
+              step="0.01" 
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-2.5 font-bold focus:border-emerald-500 outline-none transition-colors text-white text-sm"
+              value={settings.defaultPaymentFeePercent ?? 3.99} 
+              onChange={e => handleUpdate('defaultPaymentFeePercent', Number(e.target.value))} 
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="block text-[10px] font-black uppercase text-zinc-400">Comissão de Marketplace Padrão (%)</label>
+            <input 
+              type="number" 
+              step="0.01" 
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-2.5 font-bold focus:border-emerald-500 outline-none transition-colors text-white text-sm"
+              value={settings.defaultMarketplaceFeePercent ?? 0.00} 
+              onChange={e => handleUpdate('defaultMarketplaceFeePercent', Number(e.target.value))} 
+            />
+          </div>
+          <div className="space-y-1.5 sm:col-span-2">
+            <label className="block text-[10px] font-black uppercase text-zinc-400">Impostos / Simples / MEI Padrão (%)</label>
+            <input 
+              type="number" 
+              step="0.01" 
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-2.5 font-bold focus:border-emerald-500 outline-none transition-colors text-white text-sm"
+              value={settings.defaultTaxPercent ?? 6.00} 
+              onChange={e => handleUpdate('defaultTaxPercent', Number(e.target.value))} 
+            />
           </div>
         </div>
       </div>

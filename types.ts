@@ -1,14 +1,58 @@
 
 export enum OrderStatus {
-  PRODUCTION = 'Em produção',
-  READY = 'Pronto',
-  DELIVERED = 'Entregue'
+  PENDING = 'Aguardando Aprovação',
+  QUEUE = 'Na Fila de Impressão',
+  PRINTING = 'Imprimindo',
+  PRODUCTION = 'Imprimindo', // Mantém compatibilidade com referências legadas
+  FINISHING = 'Em Acabamento / Pós-cura',
+  READY = 'Pronto para Envio / Retirada',
+  DELIVERED = 'Entregue',
+  CANCELLED = 'Cancelado'
 }
 
 export enum PaymentMethod {
   PIX = 'Pix',
   CASH = 'Dinheiro',
   CARD = 'Cartão'
+}
+
+export interface FinancialConfig {
+  imposto: number; // % (ex: 6% MEI/Simples)
+  taxaPagamento: number; // % (ex: 3.99% Cartão / 0% Pix)
+  comissaoMarketplace: number; // % (ex: 18% ML / 14% Shopee)
+  embalagem: number; // R$ (ex: 2.50 caixa/plástico bolha)
+  outrosCustos: number; // R$ (ex: fita, adesivo, brinde)
+  margemLucro: number; // % sobre o custo base (markup)
+  arredondamentoComercial?: boolean;
+}
+
+export interface PricingBreakdown {
+  custoProducao: number;
+  embalagem: number;
+  outrosCustos: number;
+  custoBase: number;
+  margemLucro: number;
+  lucroDesejado: number;
+  subtotalNecessario: number;
+  totalTaxasPercentual: number;
+  impostoPercentual: number;
+  impostoValor: number;
+  taxaPagamentoPercentual: number;
+  taxaPagamentoValor: number;
+  marketplacePercentual: number;
+  marketplaceValor: number;
+  totalTaxasValor: number;
+  precoBaseVenda: number;
+  descontoValor: number;
+  descontoPercentual: number;
+  totalFinal: number;
+  precoVenda: number;
+  lucroLiquido: number;
+  margemEfetiva: number;
+  lucroSobreCustoEfetivo: number;
+  alertaPrejuizo: boolean;
+  alertaMargemBaixa: boolean;
+  erro?: string;
 }
 
 export interface Printer {
@@ -88,6 +132,20 @@ export interface Order {
   payments: Payment[];
   paymentMethod: PaymentMethod;
   createdAt: string;
+  custosFinanceiros?: FinancialConfig;
+  detalhesPrecificacao?: PricingBreakdown;
+}
+
+export interface BusinessInfo {
+  companyName?: string;
+  phone?: string;
+  whatsapp?: string;
+  instagram?: string;
+  email?: string;
+  website?: string;
+  cityState?: string;
+  address?: string;
+  logoUrl?: string;
 }
 
 export interface Settings {
@@ -99,6 +157,12 @@ export interface Settings {
   currency: string;
   filamentBrands: string[];
   categories: string[];
+  businessInfo?: BusinessInfo;
+  defaultPackagingCost?: number; // Custo padrão de embalagem (R$)
+  defaultOtherCosts?: number; // Outros custos fixos padrão (R$)
+  defaultPaymentFeePercent?: number; // Taxa de meio de pagamento padrão (%)
+  defaultMarketplaceFeePercent?: number; // Comissão de marketplace padrão (%)
+  defaultTaxPercent?: number; // Impostos padrão (%)
 }
 
 export interface User {
