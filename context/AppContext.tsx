@@ -1,6 +1,16 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { Part, Customer, Order, Settings, User, Filament, Printer, BusinessInfo } from '../types';
 import { supabase } from '../services/supabase';
+import { 
+  SettingsSyncState, 
+  DEFAULT_SETTINGS, 
+  rowToSettings, 
+  loadLocalSettings, 
+  saveLocalSettings, 
+  fetchRemoteSettings, 
+  saveRemoteSettings, 
+  sanitizeErrorMessage 
+} from '../services/settingsService';
 
 interface AppContextType {
   parts: Part[];
@@ -9,6 +19,9 @@ interface AppContextType {
   filaments: Filament[];
   printers: Printer[];
   settings: Settings;
+  settingsSyncState: SettingsSyncState;
+  settingsConflict: { remoteUpdatedAt: string; pendingSettings: Settings } | null;
+  resolveConflict: (choice: 'keep_remote' | 'overwrite_remote') => Promise<void>;
   user: User | null;
   loading: boolean;
   dbError: string | null;
@@ -17,59 +30,13 @@ interface AppContextType {
   setOrders: (orders: Order[]) => void;
   setFilaments: (filaments: Filament[]) => void;
   setPrinters: (printers: Printer[]) => void;
-  setSettings: (settings: Settings) => Promise<boolean>;
+  setSettings: (settings: Settings, options?: { force?: boolean }) => Promise<boolean>;
   setUser: (user: User | null) => void;
   logout: () => Promise<void>;
   refreshData: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
-
-const DEFAULT_SETTINGS: Settings = {
-  defaultEnergyCost: 0.85,
-  defaultFilamentCost: 120,
-  defaultProfitMargin: 100,
-  hourlyLaborRate: 25.00,
-  hourlyMaintenanceCost: 1.50,
-  currency: 'R$',
-  filamentBrands: ['3D Prime', 'Creality', 'Voolt3D', 'GTMax'],
-  categories: ['Chaveiro', 'Organizador', 'Decoração', 'Suporte', 'Action Figure', 'Outros'],
-  businessInfo: {
-    companyName: '',
-    phone: '',
-    whatsapp: '',
-    instagram: '',
-    email: '',
-    website: '',
-    cityState: '',
-    address: '',
-    logoUrl: ''
-  },
-  defaultPackagingCost: 2.50,
-  defaultOtherCosts: 0.00,
-  defaultPaymentFeePercent: 3.99,
-  defaultMarketplaceFeePercent: 0.00,
-  defaultTaxPercent: 6.00
-};
-
-/**
- * Sanitiza mensagens de erro, ocultando tokens, senhas, chaves de API e dados confidenciais.
- */
-const sanitizeErrorMessage = (msg: unknown): string => {
-  if (!msg) return 'Erro desconhecido';
-  let text = typeof msg === 'string' ? msg : String((msg as any)?.message || msg);
-
-  // Remove tokens JWT (ex: eyJ...)
-  text = text.replace(/eyJ[a-zA-Z0-9_\-.]+/g, '[TOKEN_REMOVIDO]');
-  // Remove tokens Bearer
-  text = text.replace(/Bearer\s+[a-zA-Z0-9_\-.]+/gi, 'Bearer [TOKEN_REMOVIDO]');
-  // Remove parâmetros com senhas ou chaves
-  text = text.replace(/(apikey|token|password|secret|key)=([^&\s]+)/gi, '$1=[REMOVIDO]');
-  // Remove strings longas que possam ser credenciais privadas
-  text = text.replace(/([a-zA-Z0-9_-]{45,})/g, '[DADO_SENSIVEL_REMOVIDO]');
-
-  return text.trim();
-};
 
 interface TableFetchResult<T = any> {
   table: string;
@@ -86,6 +53,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [filaments, setFilamentsState] = useState<Filament[]>([]);
   const [printers, setPrintersState] = useState<Printer[]>([]);
   const [settings, setSettingsState] = useState<Settings>(DEFAULT_SETTINGS);
+  const [settingsSyncState, setSettingsSyncState] = useState<SettingsSyncState>('synced');
+  const [settingsConflict, setSettingsConflict] = useState<{ remoteUpdatedAt: string; pendingSettings: Settings } | null>(null);
   const [loading, setLoading] = useState(true);
   const [dbError, setDbError] = useState<string | null>(null);
 
@@ -108,6 +77,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setFilamentsState([]);
         setPrintersState([]);
         setSettingsState(DEFAULT_SETTINGS);
+        setSettingsSyncState('synced');
+        setSettingsConflict(null);
         setDbError(null);
       }
     });
@@ -128,10 +99,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     window.addEventListener('visibilitychange', handleSyncOnVisible);
     window.addEventListener('focus', handleSyncOnVisible);
+    window.addEventListener('online', handleSyncOnVisible);
 
     return () => {
       window.removeEventListener('visibilitychange', handleSyncOnVisible);
       window.removeEventListener('focus', handleSyncOnVisible);
+      window.removeEventListener('online', handleSyncOnVisible);
     };
   }, [user]);
 
@@ -180,76 +153,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (filamentsRes.success && filamentsRes.data !== null) setFilamentsState(filamentsRes.data);
       if (printersRes.success && printersRes.data !== null) setPrintersState(printersRes.data);
 
-      // Consulta protegida de settings
+      // Consulta protegida de settings usando settingsService
       let settingsError: string | null = null;
       try {
-        const { data: s, error: sError } = await supabase
-          .from('settings')
-          .select('*')
-          .eq('user_id', user.id)
-          .maybeSingle();
+        const localCache = loadLocalSettings(user.id);
+        const fallback = localCache ? localCache.settings : DEFAULT_SETTINGS;
+
+        const { data: remoteData, error: sError } = await fetchRemoteSettings(user.id);
 
         if (sError) {
-          const sanitized = sanitizeErrorMessage(sError.message || `Código ${sError.code || 'desconhecido'}`);
-          console.warn('Aviso na tabela "settings":', sanitized);
-          if (sError.code === '42P01' || sError.code === 'PGRST205') {
-            settingsError = 'Tabela "settings" ausente no banco de dados';
-          } else if (sError.code === 'PGRST204' || sanitized.toLowerCase().includes('column') || sanitized.toLowerCase().includes('coluna')) {
-            settingsError = `Coluna ausente na tabela "settings": ${sanitized}`;
-          } else {
-            settingsError = `Tabela "settings": ${sanitized}`;
+          console.warn('Aviso ao consultar settings no Supabase:', sError);
+          settingsError = `Tabela "settings": ${sError}`;
+          if (localCache) {
+            setSettingsState(localCache.settings);
+            setSettingsSyncState(localCache.hasPendingSync ? 'pending_local' : 'error');
           }
-        } else if (s) {
-          // Cloud business info pode estar em business_info (snake_case) ou businessInfo (camelCase)
-          const cloudBusiness = (s.business_info && typeof s.business_info === 'object' && Object.keys(s.business_info).length > 0)
-            ? s.business_info
-            : (s.businessInfo && typeof s.businessInfo === 'object' && Object.keys(s.businessInfo).length > 0)
-              ? s.businessInfo
-              : undefined;
-
-          let localBusiness: BusinessInfo | undefined = undefined;
-          try {
-            const raw = localStorage.getItem(`printflow_business_info_${user.id}`);
-            if (raw) localBusiness = JSON.parse(raw);
-          } catch (e) {
-            // ignore
-          }
-
-          const resolvedBusiness: BusinessInfo = cloudBusiness || localBusiness || DEFAULT_SETTINGS.businessInfo;
-
-          // Se os dados vieram da nuvem, mantém cache local atualizado para uso offline
-          if (cloudBusiness) {
-            try {
-              localStorage.setItem(`printflow_business_info_${user.id}`, JSON.stringify(cloudBusiness));
-            } catch (e) {
-              // ignore
-            }
-          }
-
-          setSettingsState({
-            defaultEnergyCost: Number(s.defaultEnergyCost ?? s.default_energy_cost ?? DEFAULT_SETTINGS.defaultEnergyCost),
-            defaultFilamentCost: Number(s.defaultFilamentCost ?? s.default_filament_cost ?? DEFAULT_SETTINGS.defaultFilamentCost),
-            defaultProfitMargin: Number(s.defaultProfitMargin ?? s.default_profit_margin ?? DEFAULT_SETTINGS.defaultProfitMargin),
-            hourlyLaborRate: Number(s.hourlyLaborRate ?? s.hourly_labor_rate ?? DEFAULT_SETTINGS.hourlyLaborRate),
-            hourlyMaintenanceCost: Number(s.hourlyMaintenanceCost ?? s.hourly_maintenance_cost ?? DEFAULT_SETTINGS.hourlyMaintenanceCost),
-            currency: s.currency || DEFAULT_SETTINGS.currency,
-            filamentBrands: s.filamentBrands || s.filament_brands || DEFAULT_SETTINGS.filamentBrands,
-            categories: s.categories || DEFAULT_SETTINGS.categories,
-            businessInfo: resolvedBusiness
-          });
+        } else if (remoteData) {
+          const resolved = rowToSettings(remoteData, fallback);
+          // Determina se a nuvem tem as colunas completas ou apenas as base
+          const isFullCloud = ('business_info' in remoteData || 'businessInfo' in remoteData) &&
+            ('hourly_labor_rate' in remoteData || 'hourlyLaborRate' in remoteData);
+          setSettingsState(resolved);
+          saveLocalSettings(user.id, resolved, !isFullCloud);
+          setSettingsSyncState(isFullCloud ? 'synced' : 'pending_local');
+          setSettingsConflict(null);
         } else {
-          let localBusiness: BusinessInfo | undefined = undefined;
-          try {
-            const raw = localStorage.getItem(`printflow_business_info_${user.id}`);
-            if (raw) localBusiness = JSON.parse(raw);
-          } catch (e) {
-            // ignore
-          }
-          if (localBusiness) {
-            setSettingsState(prev => ({
-              ...prev,
-              businessInfo: localBusiness
-            }));
+          // Sem registro remoto ainda (primeiro acesso)
+          if (localCache) {
+            setSettingsState(localCache.settings);
+            setSettingsSyncState('pending_local');
+          } else {
+            setSettingsState(DEFAULT_SETTINGS);
+            setSettingsSyncState('pending_local');
           }
         }
       } catch (err: any) {
@@ -292,105 +227,80 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const setSettings = async (newSettings: Settings): Promise<boolean> => {
+  const setSettings = async (newSettings: Settings, options?: { force?: boolean }): Promise<boolean> => {
+    setSettingsSyncState('saving');
+
     // 1. Armazenamento local imediato (como cache/offline fallback isolado por usuário)
-    if (user && newSettings.businessInfo) {
-      try {
-        localStorage.setItem(`printflow_business_info_${user.id}`, JSON.stringify(newSettings.businessInfo));
-      } catch (e) {
-        console.warn('Erro ao salvar businessInfo no localStorage:', e);
-      }
+    if (user) {
+      saveLocalSettings(user.id, newSettings, true);
     }
 
     if (!user) {
       setSettingsState(newSettings);
+      setSettingsSyncState('pending_local');
       return true;
     }
 
     try {
-      const businessPayload = newSettings.businessInfo || {};
+      const result = await saveRemoteSettings(user.id, newSettings, options);
 
-      // 2. Tentativa 1: Enviar com business_info para sincronização em nuvem entre dispositivos (padrão Postgres)
-      let upsertRes = await supabase
-        .from('settings')
-        .upsert({
-          user_id: user.id,
-          currency: newSettings.currency || 'R$',
-          categories: newSettings.categories || [],
-          default_energy_cost: newSettings.defaultEnergyCost,
-          default_filament_cost: newSettings.defaultFilamentCost,
-          default_profit_margin: newSettings.defaultProfitMargin,
-          filament_brands: newSettings.filamentBrands || [],
-          business_info: businessPayload,
+      if (result.conflict) {
+        setSettingsConflict({
+          remoteUpdatedAt: result.remoteUpdatedAt || new Date().toISOString(),
+          pendingSettings: newSettings
         });
-
-      // Tentativa 2: Se falhar porque a coluna é "businessInfo" (camelCase)
-      if (upsertRes.error && upsertRes.error.code === 'PGRST204' && upsertRes.error.message.includes('business_info')) {
-        upsertRes = await supabase
-          .from('settings')
-          .upsert({
-            user_id: user.id,
-            currency: newSettings.currency || 'R$',
-            categories: newSettings.categories || [],
-            default_energy_cost: newSettings.defaultEnergyCost,
-            default_filament_cost: newSettings.defaultFilamentCost,
-            default_profit_margin: newSettings.defaultProfitMargin,
-            filament_brands: newSettings.filamentBrands || [],
-            businessInfo: businessPayload,
-          });
-      }
-
-      // Tentativa 3: Se as colunas de dados comerciais ainda não foram adicionadas no Supabase pelo usuário,
-      // salva as configurações básicas de custos para não perder valores numéricos e orienta sobre a coluna SQL
-      if (upsertRes.error && upsertRes.error.code === 'PGRST204' && (upsertRes.error.message.includes('businessInfo') || upsertRes.error.message.includes('business_info'))) {
-        console.warn('Coluna businessInfo/business_info não encontrada no Supabase. Gravando dados comerciais no cache local.');
-        
-        const fallbackRes = await supabase
-          .from('settings')
-          .upsert({
-            user_id: user.id,
-            currency: newSettings.currency || 'R$',
-            categories: newSettings.categories || [],
-            default_energy_cost: newSettings.defaultEnergyCost,
-            default_filament_cost: newSettings.defaultFilamentCost,
-            default_profit_margin: newSettings.defaultProfitMargin,
-            filament_brands: newSettings.filamentBrands || [],
-          });
-
-        if (fallbackRes.error) {
-          const sanitized = sanitizeErrorMessage(fallbackRes.error.message || `Código ${fallbackRes.error.code || 'desconhecido'}`);
-          console.error('Erro ao salvar configurações no Supabase:', sanitized);
-          setDbError(`Falha ao salvar configurações: ${sanitized}`);
-          return false;
-        }
-
-        setSettingsState(newSettings);
-        setDbError('Configurações salvas! Para ativar sincronização de Dados Comerciais em outros celulares/PCs, execute o comando SQL em Configurações > Reparar Banco Cloud.');
-        return true;
-      }
-
-      if (upsertRes.error) {
-        const sanitized = sanitizeErrorMessage(upsertRes.error.message || `Código ${upsertRes.error.code || 'desconhecido'}`);
-        console.error('Erro ao salvar configurações no Supabase:', sanitized);
-        setDbError(`Falha ao salvar configurações: ${sanitized}`);
+        setSettingsSyncState('pending_local');
+        setDbError('Conflito de sincronização: este cadastro foi alterado em outro dispositivo mais recentemente.');
         return false;
       }
 
-      // Gravado com sucesso no Supabase (incluindo dados comerciais para multi-dispositivos)!
-      setSettingsState(newSettings);
-      setDbError(prev => (prev && (prev.includes('settings') || prev.includes('Dados Comerciais')) ? null : prev));
-      return true;
+      setSettingsConflict(null);
+
+      if (result.success) {
+        setSettingsState(newSettings);
+        if (result.cloudSyncedFull) {
+          saveLocalSettings(user.id, newSettings, false);
+          setSettingsSyncState('synced');
+          setDbError(prev => (prev && (prev.includes('settings') || prev.includes('Configurações') || prev.includes('Conflito')) ? null : prev));
+          return true;
+        } else if (result.requiresMigration) {
+          saveLocalSettings(user.id, newSettings, true);
+          setSettingsSyncState('pending_local');
+          setDbError('Custos básicos salvos no Supabase. Para sincronizar Dados Comerciais e Custos Horários entre computador e celular, execute o script SQL na aba Ajustes.');
+          return true;
+        }
+      }
+
+      saveLocalSettings(user.id, newSettings, true);
+      setSettingsSyncState('error');
+      setDbError(`Falha ao salvar configurações no Supabase: ${result.error || 'Erro desconhecido'}`);
+      return false;
     } catch (err: any) {
       const sanitized = sanitizeErrorMessage(err?.message || 'Falha de conexão');
       console.error('Exceção ao salvar configurações:', sanitized);
+      saveLocalSettings(user.id, newSettings, true);
+      setSettingsSyncState('error');
       setDbError(`Falha de conexão ao salvar configurações: ${sanitized}`);
       return false;
+    }
+  };
+
+  const resolveConflict = async (choice: 'keep_remote' | 'overwrite_remote') => {
+    if (choice === 'keep_remote') {
+      setSettingsConflict(null);
+      await refreshData();
+    } else if (choice === 'overwrite_remote' && settingsConflict) {
+      const toSave = settingsConflict.pendingSettings;
+      setSettingsConflict(null);
+      await setSettings(toSave, { force: true });
     }
   };
 
   const logout = async () => {
     await supabase.auth.signOut();
     setUser(null);
+    setSettingsConflict(null);
+    setSettingsSyncState('synced');
   };
 
   return (
@@ -401,6 +311,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       filaments, setFilaments: setFilamentsState,
       printers, setPrinters: setPrintersState,
       settings, setSettings, 
+      settingsSyncState,
+      settingsConflict,
+      resolveConflict,
       user, setUser,
       loading, dbError,
       logout, refreshData

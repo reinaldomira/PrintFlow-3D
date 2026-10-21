@@ -163,6 +163,7 @@ export interface Settings {
   defaultPaymentFeePercent?: number; // Taxa de meio de pagamento padrão (%)
   defaultMarketplaceFeePercent?: number; // Comissão de marketplace padrão (%)
   defaultTaxPercent?: number; // Impostos padrão (%)
+  updatedAt?: string; // Timestamp ISO da última atualização na nuvem/local
 }
 
 export interface User {

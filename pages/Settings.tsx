@@ -4,19 +4,39 @@ import { BusinessInfo } from '../types';
 import { 
   LogOut, Plus, Trash2, Database, Copy, AlertCircle, Check, 
   User as UserIcon, Tag, Layers, Zap, Image as ImageIcon,
-  Building2, Upload, Info, Cloud, CheckCircle2, Save, Calculator
+  Building2, Upload, Info, Cloud, CheckCircle2, Save, Calculator, RefreshCw
 } from 'lucide-react';
 import { PWAInstallButton } from '../components/PWAInstallButton';
+import { processAndUploadLogo } from '../services/settingsService';
 
 const Settings: React.FC = () => {
-  const { settings, setSettings, logout, user, dbError } = useApp();
+  const { 
+    settings, 
+    setSettings, 
+    logout, 
+    user, 
+    dbError, 
+    settingsSyncState, 
+    refreshData, 
+    settingsConflict, 
+    resolveConflict 
+  } = useApp();
   const [newBrand, setNewBrand] = useState('');
   const [newCategory, setNewCategory] = useState('');
   const [copiedSql, setCopiedSql] = useState(false);
   const [copiedSyncSql, setCopiedSyncSql] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [logoNotice, setLogoNotice] = useState<string | null>(null);
   const [businessForm, setBusinessForm] = useState<BusinessInfo>(() => settings.businessInfo || {});
   const [isDirty, setIsDirty] = useState(false);
+
+  // Reseta estado sujo e re-inicializa formulário ao trocar de usuário ou deslogar
+  React.useEffect(() => {
+    setIsDirty(false);
+    setSaveStatus('idle');
+    setLogoNotice(null);
+    setBusinessForm(settings.businessInfo || {});
+  }, [user?.id]);
 
   // Sincroniza formulário local quando dados chegam da nuvem (ex: outro dispositivo ou login)
   React.useEffect(() => {
@@ -36,12 +56,17 @@ const Settings: React.FC = () => {
     return () => clearTimeout(timer);
   }, [businessForm, isDirty]);
 
-  const businessSyncSql = `ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS "businessInfo" jsonb DEFAULT '{}'::jsonb;
+  const businessSyncSql = `-- SINCRONIZAÇÃO COMPLETA DAS CONFIGURAÇÕES (PrintFlow 3D)
+-- Rodar no SQL EDITOR do Supabase para suporte multi-dispositivo (PC & Celular)
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_labor_rate numeric DEFAULT 25.00;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_maintenance_cost numeric DEFAULT 1.50;
 ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS business_info jsonb DEFAULT '{}'::jsonb;
-ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS "hourlyLaborRate" numeric DEFAULT 25;
-ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS "hourlyMaintenanceCost" numeric DEFAULT 1.5;
-ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_labor_rate numeric DEFAULT 25;
-ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_maintenance_cost numeric DEFAULT 1.5;`;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS default_packaging_cost numeric DEFAULT 2.50;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS default_other_costs numeric DEFAULT 0.00;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS default_payment_fee_percent numeric DEFAULT 3.99;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS default_marketplace_fee_percent numeric DEFAULT 0.00;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS default_tax_percent numeric DEFAULT 6.00;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();`;
 
   const copySyncSql = () => {
     navigator.clipboard.writeText(businessSyncSql);
@@ -50,7 +75,7 @@ ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_maintenance_cost num
   };
 
   const sqlScript = `
--- SCRIPT DE REPARAÇÃO PRINTFLOW v2.6 (FOTOS + RECEITAS)
+-- SCRIPT DE ATUALIZAÇÃO E SINCRONIZAÇÃO PRINTFLOW 3D
 -- Rodar no SQL EDITOR do Supabase
 
 -- 1. TABELA FILAMENTOS
@@ -59,12 +84,12 @@ CREATE TABLE IF NOT EXISTS public.filaments (
     user_id uuid REFERENCES auth.users(id),
     brand text,
     material text,
-    "colorName" text,
-    "colorHex" text DEFAULT '#10b981',
+    color_name text,
+    color_hex text DEFAULT '#10b981',
     weight numeric DEFAULT 1000,
-    "remainingWeight" numeric DEFAULT 1000,
-    "pricePaid" numeric DEFAULT 120,
-    "createdAt" timestamptz DEFAULT now()
+    remaining_weight numeric DEFAULT 1000,
+    price_paid numeric DEFAULT 120,
+    created_at timestamptz DEFAULT now()
 );
 
 -- 2. TABELA IMPRESSORAS
@@ -75,7 +100,7 @@ CREATE TABLE IF NOT EXISTS public.printers (
     model text,
     power numeric DEFAULT 350,
     status text DEFAULT 'Ativa',
-    "createdAt" timestamptz DEFAULT now()
+    created_at timestamptz DEFAULT now()
 );
 
 -- 3. TABELA PEÇAS
@@ -86,51 +111,50 @@ CREATE TABLE IF NOT EXISTS public.parts (
     category text,
     material text DEFAULT 'PLA',
     weight numeric DEFAULT 0,
-    "printTime" numeric DEFAULT 0,
-    "postProcessingTime" numeric DEFAULT 0,
-    "filamentCost" numeric,
-    "energyCost" numeric,
-    "wastePercent" numeric DEFAULT 5,
-    "profitMargin" numeric DEFAULT 100,
+    print_time numeric DEFAULT 0,
+    post_processing_time numeric DEFAULT 0,
+    filament_cost numeric,
+    energy_cost numeric,
+    waste_percent numeric DEFAULT 5,
+    profit_margin numeric DEFAULT 100,
     recipe jsonb DEFAULT '[]'::jsonb,
-    "imageUrl" text,
-    "createdAt" timestamptz DEFAULT now(),
-    "updatedAt" timestamptz DEFAULT now()
+    image_url text,
+    created_at timestamptz DEFAULT now(),
+    updated_at timestamptz DEFAULT now()
 );
-
--- GARANTIA DE COLUNAS
-ALTER TABLE public.parts ADD COLUMN IF NOT EXISTS weight numeric DEFAULT 0;
-ALTER TABLE public.parts ADD COLUMN IF NOT EXISTS "printTime" numeric DEFAULT 0;
-ALTER TABLE public.parts ADD COLUMN IF NOT EXISTS "postProcessingTime" numeric DEFAULT 0;
-ALTER TABLE public.parts ADD COLUMN IF NOT EXISTS recipe jsonb DEFAULT '[]'::jsonb;
-ALTER TABLE public.parts ADD COLUMN IF NOT EXISTS "imageUrl" text;
 
 -- 4. TABELA PEDIDOS
 CREATE TABLE IF NOT EXISTS public.orders (
     id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
     user_id uuid REFERENCES auth.users(id),
-    "customerId" uuid,
+    customer_id uuid,
     items jsonb DEFAULT '[]'::jsonb,
-    "totalValue" numeric NOT NULL DEFAULT 0,
+    total_value numeric NOT NULL DEFAULT 0,
     status text DEFAULT 'Em produção',
     discount numeric DEFAULT 0,
     payments jsonb DEFAULT '[]'::jsonb,
-    "paymentMethod" text,
-    "createdAt" timestamptz DEFAULT now()
+    payment_method text DEFAULT 'Pix',
+    created_at timestamptz DEFAULT now()
 );
 
 -- 5. TABELA CONFIGURAÇÕES
 CREATE TABLE IF NOT EXISTS public.settings (
     user_id uuid PRIMARY KEY REFERENCES auth.users(id),
-    "defaultEnergyCost" numeric DEFAULT 0.85,
-    "defaultFilamentCost" numeric DEFAULT 120,
-    "defaultProfitMargin" numeric DEFAULT 100,
-    "hourlyLaborRate" numeric DEFAULT 25,
-    "hourlyMaintenanceCost" numeric DEFAULT 1.5,
-    "filamentBrands" text[] DEFAULT ARRAY['3D Prime', 'Creality'],
+    default_energy_cost numeric DEFAULT 0.85,
+    default_filament_cost numeric DEFAULT 120,
+    default_profit_margin numeric DEFAULT 100,
+    hourly_labor_rate numeric DEFAULT 25.00,
+    hourly_maintenance_cost numeric DEFAULT 1.50,
+    currency text DEFAULT 'R$',
+    filament_brands text[] DEFAULT ARRAY['3D Prime', 'Creality'],
     categories text[] DEFAULT ARRAY['Chaveiro', 'Organizador', 'Decoração'],
-    "businessInfo" jsonb DEFAULT '{}'::jsonb,
-    business_info jsonb DEFAULT '{}'::jsonb
+    business_info jsonb DEFAULT '{}'::jsonb,
+    default_packaging_cost numeric DEFAULT 2.50,
+    default_other_costs numeric DEFAULT 0.00,
+    default_payment_fee_percent numeric DEFAULT 3.99,
+    default_marketplace_fee_percent numeric DEFAULT 0.00,
+    default_tax_percent numeric DEFAULT 6.00,
+    updated_at timestamptz DEFAULT now()
 );
 
 -- 6. TABELA CLIENTES
@@ -141,21 +165,19 @@ CREATE TABLE IF NOT EXISTS public.customers (
     phone text NOT NULL,
     email text,
     notes text,
-    "createdAt" timestamptz DEFAULT now()
+    created_at timestamptz DEFAULT now()
 );
 
--- GARANTIA DE COLUNAS ADICIONAIS E SINCRONIZAÇÃO ENTRE DISPOSITIVOS
-ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS discount numeric DEFAULT 0;
-ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS "paymentMethod" text DEFAULT 'Pix';
-ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS payments jsonb DEFAULT '[]'::jsonb;
-ALTER TABLE public.parts ADD COLUMN IF NOT EXISTS "printerId" text;
-ALTER TABLE public.parts ADD COLUMN IF NOT EXISTS "postProcessingTime" numeric DEFAULT 0;
-ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS "businessInfo" jsonb DEFAULT '{}'::jsonb;
+-- GARANTIA DE COLUNAS ADICIONAIS NA TABELA SETTINGS
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_labor_rate numeric DEFAULT 25.00;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_maintenance_cost numeric DEFAULT 1.50;
 ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS business_info jsonb DEFAULT '{}'::jsonb;
-ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS "hourlyLaborRate" numeric DEFAULT 25;
-ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS "hourlyMaintenanceCost" numeric DEFAULT 1.5;
-ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_labor_rate numeric DEFAULT 25;
-ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_maintenance_cost numeric DEFAULT 1.5;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS default_packaging_cost numeric DEFAULT 2.50;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS default_other_costs numeric DEFAULT 0.00;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS default_payment_fee_percent numeric DEFAULT 3.99;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS default_marketplace_fee_percent numeric DEFAULT 0.00;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS default_tax_percent numeric DEFAULT 6.00;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();
 `.trim();
 
   const handleUpdate = (key: keyof typeof settings, value: any) => {
@@ -191,29 +213,35 @@ ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_maintenance_cost num
     await saveBusinessData(businessForm);
   };
 
-  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
-    if (file.size > 2 * 1024 * 1024) {
-      alert('A imagem do logotipo deve ter no máximo 2MB.');
+    if (!file || !user) return;
+    if (file.size > 5 * 1024 * 1024) {
+      alert('A imagem do logotipo deve ter no máximo 5MB.');
       return;
     }
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const base64 = event.target?.result as string;
-      if (base64) {
-        const updated = { ...businessForm, logoUrl: base64 };
-        setBusinessForm(updated);
-        setIsDirty(true);
-        saveBusinessData(updated);
+    try {
+      setSaveStatus('saving');
+      const { url, isCloudStorage, notice } = await processAndUploadLogo(user.id, file);
+      const updated = { ...businessForm, logoUrl: url };
+      setBusinessForm(updated);
+      setIsDirty(true);
+      if (notice) {
+        setLogoNotice(notice);
+      } else {
+        setLogoNotice(isCloudStorage ? 'Logotipo enviado ao Supabase Storage!' : null);
       }
-    };
-    reader.readAsDataURL(file);
+      await saveBusinessData(updated);
+    } catch (err: any) {
+      console.error('Erro ao processar logotipo:', err);
+      alert('Erro ao carregar logotipo: ' + (err.message || 'Falha de processamento'));
+    }
   };
 
   const handleRemoveLogo = () => {
     const updated = { ...businessForm, logoUrl: '' };
     setBusinessForm(updated);
+    setLogoNotice(null);
     setIsDirty(true);
     saveBusinessData(updated);
   };
@@ -244,6 +272,49 @@ ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_maintenance_cost num
         <h2 className="text-2xl font-bold">Configurações</h2>
         <p className="text-zinc-500">Sincronização Cloud v2.6</p>
       </div>
+
+      {/* Alerta de Conflito de Sincronização entre Dispositivos */}
+      {settingsConflict && (
+        <div className="bg-amber-500/15 border-2 border-amber-500/50 rounded-3xl p-6 shadow-xl shadow-amber-500/10 space-y-4">
+          <div className="flex items-start gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-amber-500 text-zinc-950 flex items-center justify-center shrink-0">
+              <AlertCircle className="w-6 h-6" />
+            </div>
+            <div className="flex-1">
+              <h3 className="font-black uppercase text-sm text-amber-400">Conflito de Concorrência Detectado</h3>
+              <p className="text-xs text-zinc-300 mt-1 leading-relaxed">
+                Outro dispositivo gravou configurações mais recentes na nuvem em{' '}
+                <span className="font-semibold text-white">
+                  {new Date(settingsConflict.remoteUpdatedAt).toLocaleString('pt-BR')}
+                </span>.
+                Para evitar sobrescrita de dados sem aviso, escolha como prosseguir:
+              </p>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+            <button
+              type="button"
+              onClick={async () => {
+                setIsDirty(false);
+                await resolveConflict('keep_remote');
+              }}
+              className="py-3 px-4 bg-zinc-800 hover:bg-zinc-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 border border-zinc-700 transition-all cursor-pointer"
+            >
+              <RefreshCw className="w-4 h-4 text-emerald-400" /> Manter da Nuvem (Descartar local)
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                setIsDirty(false);
+                await resolveConflict('overwrite_remote');
+              }}
+              className="py-3 px-4 bg-amber-500 hover:bg-amber-400 text-zinc-950 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer"
+            >
+              <Save className="w-4 h-4" /> Sobrescrever Nuvem com Dados Locais
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* SQL Repair Card */}
       <div className={`rounded-3xl p-6 border transition-all ${dbError ? 'bg-amber-500/10 border-amber-500/30 shadow-xl shadow-amber-500/10' : 'bg-zinc-900 border-zinc-800'}`}>
@@ -306,47 +377,80 @@ ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_maintenance_cost num
               Dados comerciais do orçamento
             </h3>
           </div>
-          <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 flex items-center gap-1.5">
-            <Cloud className="w-3 h-3" /> Sincronização em Nuvem (Multi-Dispositivos)
-          </span>
+          {settingsSyncState === 'synced' && (
+            <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1.5">
+              <CheckCircle2 className="w-3 h-3" /> Sincronizado na Nuvem (PC & Celular)
+            </span>
+          )}
+          {settingsSyncState === 'pending_local' && (
+            <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 flex items-center gap-1.5">
+              <AlertCircle className="w-3 h-3" /> Salvo no Dispositivo (Pendente na Nuvem)
+            </span>
+          )}
+          {settingsSyncState === 'saving' && (
+            <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 flex items-center gap-1.5">
+              <Cloud className="w-3 h-3 animate-pulse" /> Sincronizando com Supabase...
+            </span>
+          )}
+          {settingsSyncState === 'error' && (
+            <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-red-500/10 text-red-400 border border-red-500/20 flex items-center gap-1.5">
+              <AlertCircle className="w-3 h-3" /> Erro de Conexão Cloud
+            </span>
+          )}
         </div>
 
-        {/* Banner de Sincronização em Nuvem Multi-Dispositivos */}
-        <div className="bg-cyan-500/10 border border-cyan-500/30 rounded-2xl p-4 space-y-3">
-          <div className="flex items-start gap-3">
-            <Cloud className="w-5 h-5 text-cyan-400 flex-shrink-0 mt-0.5" />
-            <div className="space-y-1">
-              <p className="font-bold text-cyan-300 text-xs sm:text-sm">
-                Sincronização Automática Ativa (PC & Celular)
-              </p>
-              <p className="text-zinc-400 leading-relaxed text-[11px]">
-                Ao salvar os dados abaixo, eles são gravados no Supabase vinculados à sua conta. Qualquer alteração feita aqui no computador será carregada automaticamente no celular, e vice-versa.
-              </p>
+        {/* Banner Informativo de Sincronização */}
+        {settingsSyncState === 'synced' ? (
+          <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-2xl p-4 space-y-2">
+            <div className="flex items-start gap-3">
+              <CheckCircle2 className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="font-bold text-emerald-300 text-xs sm:text-sm">
+                  Sincronização Cloud Ativa (PC & Celular)
+                </p>
+                <p className="text-zinc-400 leading-relaxed text-[11px]">
+                  Todas as configurações comerciais, custos e taxas estão gravadas no Supabase. Qualquer alteração feita aqui no computador será carregada automaticamente no celular ou tablet com a mesma conta.
+                </p>
+              </div>
             </div>
           </div>
-          <div className="pt-2 border-t border-cyan-500/20 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <span className="text-[10px] text-zinc-400 font-medium">
-              Necessário coluna <code className="text-cyan-300 bg-zinc-950 px-1 py-0.5 rounded">business_info</code> na tabela settings do Supabase.
-            </span>
-            <button
-              type="button"
-              onClick={copySyncSql}
-              className="text-[11px] font-bold text-cyan-400 hover:text-cyan-300 bg-zinc-950/80 hover:bg-zinc-950 px-3 py-1.5 rounded-xl border border-cyan-500/30 flex items-center justify-center gap-1.5 transition-all self-start sm:self-auto"
-            >
-              {copiedSyncSql ? (
-                <>
-                  <Check className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Comando SQL Copiado!</span>
-                </>
-              ) : (
-                <>
-                  <Copy className="w-3.5 h-3.5" />
-                  <span>Copiar SQL de Sincronização</span>
-                </>
-              )}
-            </button>
+        ) : (
+          <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 space-y-3">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="font-bold text-amber-300 text-xs sm:text-sm">
+                  Sincronização Parcial (Salvo Localmente neste Dispositivo)
+                </p>
+                <p className="text-zinc-400 leading-relaxed text-[11px]">
+                  Os custos base estão salvos no Supabase, mas para sincronizar Dados Comerciais, Mão de Obra e Manutenção na nuvem entre múltiplos aparelhos, execute o comando SQL de atualização no Supabase SQL Editor.
+                </p>
+              </div>
+            </div>
+            <div className="pt-2 border-t border-amber-500/20 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <span className="text-[10px] text-zinc-400 font-medium">
+                Adiciona colunas padronizadas em <code className="text-amber-300 bg-zinc-950 px-1 py-0.5 rounded">snake_case</code> no Supabase.
+              </span>
+              <button
+                type="button"
+                onClick={copySyncSql}
+                className="text-[11px] font-bold text-amber-400 hover:text-amber-300 bg-zinc-950/80 hover:bg-zinc-950 px-3 py-1.5 rounded-xl border border-amber-500/30 flex items-center justify-center gap-1.5 transition-all self-start sm:self-auto"
+              >
+                {copiedSyncSql ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Comando SQL Copiado!</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Copiar SQL de Sincronização</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Logotipo */}
         <div className="space-y-3">
@@ -397,6 +501,11 @@ ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_maintenance_cost num
               />
             </div>
           </div>
+          {logoNotice && (
+            <p className="text-[11px] text-cyan-400 bg-cyan-950/50 border border-cyan-800/50 p-2.5 rounded-xl">
+              {logoNotice}
+            </p>
+          )}
         </div>
 
         {/* Campos de Dados Comerciais */}
@@ -506,7 +615,7 @@ ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_maintenance_cost num
           </div>
         </div>
 
-        {/* Botão de Salvar e Sincronizar na Nuvem */}
+        {/* Botão de Salvar e Sincronizar */}
         <div className="pt-2">
           <button
             type="button"
@@ -514,31 +623,40 @@ ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_maintenance_cost num
             disabled={saveStatus === 'saving'}
             className={`w-full py-4 rounded-2xl font-black text-sm flex items-center justify-center gap-2.5 transition-all active:scale-98 shadow-lg ${
               saveStatus === 'saved'
-                ? 'bg-emerald-500 text-zinc-950 shadow-emerald-500/20'
+                ? settingsSyncState === 'synced'
+                  ? 'bg-emerald-500 text-zinc-950 shadow-emerald-500/20'
+                  : 'bg-amber-500 text-zinc-950 shadow-amber-500/20'
                 : saveStatus === 'error'
-                  ? 'bg-amber-500 text-zinc-950 shadow-amber-500/20'
+                  ? 'bg-red-500 text-white shadow-red-500/20'
                   : 'bg-cyan-500 hover:bg-cyan-400 text-zinc-950 shadow-cyan-500/20'
             }`}
           >
             {saveStatus === 'saving' ? (
               <>
                 <Cloud className="w-5 h-5 animate-pulse" />
-                <span>SINCRONIZANDO NA NUVEM...</span>
+                <span>SALVANDO CONFIGURAÇÕES...</span>
               </>
             ) : saveStatus === 'saved' ? (
-              <>
-                <CheckCircle2 className="w-5 h-5" />
-                <span>DADOS COMERCIAIS SINCRONIZADOS NA NUVEM!</span>
-              </>
+              settingsSyncState === 'synced' ? (
+                <>
+                  <CheckCircle2 className="w-5 h-5" />
+                  <span>CONFIGURAÇÕES SINCRONIZADAS NA NUVEM!</span>
+                </>
+              ) : (
+                <>
+                  <Check className="w-5 h-5" />
+                  <span>SALVO NO DISPOSITIVO (RODE O SQL PARA A NUVEM)</span>
+                </>
+              )
             ) : saveStatus === 'error' ? (
               <>
                 <AlertCircle className="w-5 h-5" />
-                <span>SALVO NO DISPOSITIVO (RODE O SQL PARA NUVEM)</span>
+                <span>ERRO AO SALVAR NO SUPABASE</span>
               </>
             ) : (
               <>
                 <Save className="w-5 h-5" />
-                <span>SALVAR E SINCRONIZAR DADOS COMERCIAIS</span>
+                <span>SALVAR DADOS DO ORÇAMENTO</span>
               </>
             )}
           </button>
@@ -549,18 +667,33 @@ ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_maintenance_cost num
       <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 space-y-6">
         <div className="flex items-center gap-2 mb-2">
           <Zap className="w-4 h-4 text-emerald-500" />
-          <h3 className="font-black uppercase text-xs tracking-widest text-zinc-400">Custos Padrão</h3>
+          <h3 className="font-black uppercase text-xs tracking-widest text-zinc-400">Custos Padrão de Fabricação</h3>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
           <div className="space-y-2">
             <label className="block text-[10px] font-black uppercase text-zinc-500">Energia (R$/kWh)</label>
             <input type="number" step="0.01" className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 font-bold focus:border-emerald-500 outline-none transition-colors"
               value={settings.defaultEnergyCost} onChange={e => handleUpdate('defaultEnergyCost', Number(e.target.value))} />
           </div>
           <div className="space-y-2">
+            <label className="block text-[10px] font-black uppercase text-zinc-500">Filamento Padrão (R$/kg)</label>
+            <input type="number" step="0.01" className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 font-bold focus:border-emerald-500 outline-none transition-colors"
+              value={settings.defaultFilamentCost} onChange={e => handleUpdate('defaultFilamentCost', Number(e.target.value))} />
+          </div>
+          <div className="space-y-2">
+            <label className="block text-[10px] font-black uppercase text-zinc-500">Margem de Lucro Padrão (%)</label>
+            <input type="number" step="1" className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 font-bold focus:border-emerald-500 outline-none transition-colors"
+              value={settings.defaultProfitMargin} onChange={e => handleUpdate('defaultProfitMargin', Number(e.target.value))} />
+          </div>
+          <div className="space-y-2">
             <label className="block text-[10px] font-black uppercase text-zinc-500">Mão de Obra (R$/h)</label>
             <input type="number" step="0.01" className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 font-bold focus:border-emerald-500 outline-none transition-colors"
               value={settings.hourlyLaborRate} onChange={e => handleUpdate('hourlyLaborRate', Number(e.target.value))} />
+          </div>
+          <div className="space-y-2">
+            <label className="block text-[10px] font-black uppercase text-zinc-500">Manutenção de Máquina (R$/h)</label>
+            <input type="number" step="0.01" className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 font-bold focus:border-emerald-500 outline-none transition-colors"
+              value={settings.hourlyMaintenanceCost} onChange={e => handleUpdate('hourlyMaintenanceCost', Number(e.target.value))} />
           </div>
         </div>
       </div>

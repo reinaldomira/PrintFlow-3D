@@ -54,7 +54,9 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
 
   const subtotal = (order.items || []).reduce((acc, i) => acc + (i.unitPrice * i.quantity), 0);
   const discount = order.discount || 0;
-  const total = order.totalValue || Math.max(0, subtotal - discount);
+  const total = (typeof order.totalValue === 'number' && !isNaN(order.totalValue))
+    ? order.totalValue
+    : Math.max(0, subtotal - discount);
 
   const handleDownload = async () => {
     try {
@@ -268,20 +270,16 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
             style={{ minHeight: '297mm' }}
           >
             
-            {/* 1. TOP BAR TÉCNICO INDUSTRIAL (PRINT_3D SPEC-DOC | ISO 52900 | ISO 2768-m | DOC: REV.04) */}
+            {/* 1. BARRA TÉCNICA DO ORÇAMENTO */}
             <div className="flex flex-wrap items-center justify-between text-[10px] font-bold tracking-wider text-slate-500 uppercase pb-2 border-b border-slate-200 mb-6 gap-2">
               <div className="flex items-center gap-2 text-slate-800 font-mono text-[10px]">
                 <span className="w-2 h-2 rounded-[2px] bg-emerald-500 inline-block"></span>
-                <span>PRINT_3D SPEC-DOC</span>
+                <span>PRINTFLOW 3D</span>
                 <span className="text-slate-300 mx-1">|</span>
-                <span className="text-slate-500 font-normal">FABRICAÇÃO ADITIVA ISO/ASTM 52900</span>
-                <span className="text-slate-300 mx-1">|</span>
-                <span className="text-slate-500 font-normal hidden sm:inline">
-                  TOLERÂNCIA GERAL: ISO 2768-m <span className="tracking-widest font-mono text-slate-300 ml-1">||||||||</span>
-                </span>
+                <span className="text-slate-500 font-normal">ORÇAMENTO DE MANUFATURA ADITIVA</span>
               </div>
               <div className="bg-slate-950 text-white font-mono text-[9px] px-2.5 py-0.5 rounded font-bold">
-                DOC: REV.04
+                REF: {orderNumStr}
               </div>
             </div>
 
@@ -307,12 +305,12 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
                       </h1>
                     </div>
                   )}
-                  <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded bg-teal-50 text-teal-700 border border-teal-200">
-                    Engenharia de Precisão
+                  <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    Impressão 3D & Prototipagem
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-500 leading-normal pt-1">
-                  Manufatura aditiva industrial, engenharia reversa & prototipagem rápida
+                  {business.address || 'Serviços especializados em manufatura aditiva sob demanda'}
                 </p>
               </div>
 
@@ -346,8 +344,8 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
                       Cliente / Solicitante
                     </h4>
                   </div>
-                  <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-teal-50 text-teal-700 border border-teal-200">
-                    Cadastro Verificado
+                  <span className="text-[9px] font-medium px-2 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">
+                    Proposta Comercial
                   </span>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[11px] pt-1">
@@ -363,7 +361,7 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
                     <span className="block text-[9px] font-bold text-slate-400 uppercase">
                       Telefone / WhatsApp:
                     </span>
-                    <strong className="text-teal-700 font-mono block text-sm truncate">
+                    <strong className="text-emerald-700 font-mono block text-sm truncate">
                       {customer?.phone || 'Não informado'}
                     </strong>
                   </div>
@@ -378,19 +376,19 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
                       Proposta Técnica
                     </span>
                     <span className="text-[8px] font-mono px-1.5 py-0.2 rounded bg-slate-800 text-slate-300">
-                      LOTE #01
+                      {order.items?.length || 0} {(order.items?.length || 0) === 1 ? 'ITEM' : 'ITENS'}
                     </span>
                   </div>
                   <h2 className="text-base font-black text-white tracking-tight">
                     ORÇAMENTO COMERCIAL
                   </h2>
                   <p className="text-[10px] text-slate-400 leading-snug pt-0.5">
-                    Itens customizados sob normas técnicas de manufatura aditiva para integração em projeto de automação.
+                    Itens personalizados sob demanda conforme especificações digitais aprovadas.
                   </p>
                 </div>
                 <div className="border-l-2 border-emerald-500 pl-2 py-0.5 mt-1">
                   <p className="text-[9.5px] italic text-slate-300 leading-tight">
-                    "Precisão nos detalhes. Qualidade em cada camada."
+                    Precisão nos detalhes e qualidade em cada camada.
                   </p>
                 </div>
               </div>
@@ -503,24 +501,24 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
                     <div className="flex items-center gap-1.5">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
                       <h4 className="text-[10px] font-black uppercase tracking-wider text-slate-700">
-                        Condições Técnicas e Fabricação
+                        Condições do Pedido
                       </h4>
                     </div>
-                    <span className="text-[8px] font-mono font-bold text-slate-400">PADRÃO: TERM-ENG-V25</span>
+                    <span className="text-[8px] font-mono font-bold text-slate-400">PRINTFLOW</span>
                   </div>
 
                   <div className="grid grid-cols-2 gap-2 text-[10px]">
                     <div className="bg-white border border-slate-200 rounded-lg p-2 shadow-xs">
-                      <span className="block text-[8px] font-bold text-slate-400 uppercase">Prazo de Fabricação:</span>
-                      <strong className="text-slate-800 font-bold text-[11px]">4 a 6 dias úteis</strong>
+                      <span className="block text-[8px] font-bold text-slate-400 uppercase">Prazo de Produção:</span>
+                      <strong className="text-slate-800 font-bold text-[11px]">A combinar</strong>
                     </div>
                     <div className="bg-white border border-slate-200 rounded-lg p-2 shadow-xs">
                       <span className="block text-[8px] font-bold text-slate-400 uppercase">Forma de Pagamento:</span>
-                      <strong className="text-slate-800 font-bold text-[11px] truncate block">{order.paymentMethod || 'PIX'} / Boleto (50% sinal)</strong>
+                      <strong className="text-slate-800 font-bold text-[11px] truncate block">{order.paymentMethod || 'A combinar'}</strong>
                     </div>
                     <div className="col-span-2 bg-white border border-slate-200 rounded-lg p-2 shadow-xs">
-                      <span className="block text-[8px] font-bold text-slate-400 uppercase">Envio / Logística:</span>
-                      <strong className="text-slate-800 font-bold text-[11px]">Sedex Express c/ Seguro e Rastreio</strong>
+                      <span className="block text-[8px] font-bold text-slate-400 uppercase">Entrega / Retirada:</span>
+                      <strong className="text-slate-800 font-bold text-[11px]">A combinar</strong>
                     </div>
                   </div>
                 </div>
@@ -528,7 +526,7 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
                 <div className="pt-2 border-t border-slate-200">
                   <span className="block text-[8.5px] font-bold uppercase text-slate-700">Nota de Manufatura:</span>
                   <p className="text-[8.5px] text-slate-500 leading-tight">
-                    Peças fabricadas sob demanda conforme arquivo digital validado pelo contratante. Microestrias superficiais são características físicas intrínsecas ao processo de manufatura aditiva.
+                    Peças fabricadas sob demanda conforme arquivo digital validado pelo contratante. Microestrias superficiais são características físicas intrínsecas ao processo de manufatura aditiva (FDM/FFF).
                   </p>
                 </div>
               </div>
@@ -553,29 +551,26 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
                   {discount > 0 && (
                     <div className="flex justify-between text-emerald-400 font-bold">
                       <span className="flex items-center gap-1">
-                        Desconto em Lote:
-                        <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-950 border border-emerald-500/30 text-emerald-300">
-                          -{Math.round((discount / subtotal) * 100)}%
-                        </span>
+                        Desconto Aplicado:
+                        {subtotal > 0 && (
+                          <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-950 border border-emerald-500/30 text-emerald-300">
+                            -{Math.round((discount / subtotal) * 100)}%
+                          </span>
+                        )}
                       </span>
                       <span className="font-mono">- {formatCurrency(discount)}</span>
                     </div>
                   )}
-
-                  <div className="flex justify-between text-slate-300">
-                    <span>Frete Sedex (Com Seguro):</span>
-                    <span className="font-mono font-bold text-white">Incluso / Balcão</span>
-                  </div>
                 </div>
 
                 <div className="pt-2 border-t border-slate-800">
                   <div className="flex items-baseline justify-between">
                     <div>
                       <span className="text-[8.5px] font-bold uppercase text-slate-400 block">
-                        Valor Total Líquido:
+                        Valor Total:
                       </span>
                       <span className="text-[8.5px] text-emerald-400">
-                        Condição especial à vista
+                        {discount > 0 ? 'Com desconto aplicado' : 'Valor final do pedido'}
                       </span>
                     </div>
                     <span className="text-2xl font-black font-mono text-white tracking-tight">
