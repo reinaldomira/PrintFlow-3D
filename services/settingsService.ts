@@ -19,7 +19,9 @@ export interface SupabaseSettingsRow {
   default_payment_fee_percent?: number | null;
   default_marketplace_fee_percent?: number | null;
   default_tax_percent?: number | null;
+  auto_refresh_orders?: boolean | null;
   updated_at?: string | null;
+  version?: number | null;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -46,7 +48,8 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultOtherCosts: 0.00,
   defaultPaymentFeePercent: 3.99,
   defaultMarketplaceFeePercent: 0.00,
-  defaultTaxPercent: 6.00
+  defaultTaxPercent: 6.00,
+  autoRefreshOrders: true
 };
 
 /**
@@ -73,13 +76,15 @@ export function rowToSettings(
 ): Settings {
   if (!row) return { ...fallbackSettings };
 
-  const cloudBusiness = (row.business_info && typeof row.business_info === 'object' && Object.keys(row.business_info).length > 0)
+  const cloudBusiness = (row.business_info && typeof row.business_info === 'object')
     ? row.business_info
-    : (row.businessInfo && typeof row.businessInfo === 'object' && Object.keys(row.businessInfo).length > 0)
+    : (row.businessInfo && typeof row.businessInfo === 'object')
       ? row.businessInfo
       : undefined;
 
-  const resolvedBusiness: BusinessInfo = cloudBusiness || fallbackSettings.businessInfo || DEFAULT_SETTINGS.businessInfo!;
+  const resolvedBusiness: BusinessInfo = cloudBusiness !== undefined
+    ? cloudBusiness
+    : (fallbackSettings.businessInfo || DEFAULT_SETTINGS.businessInfo || {});
 
   return {
     defaultEnergyCost: Number(row.default_energy_cost ?? row.defaultEnergyCost ?? fallbackSettings.defaultEnergyCost ?? DEFAULT_SETTINGS.defaultEnergyCost),
@@ -96,33 +101,47 @@ export function rowToSettings(
     defaultPaymentFeePercent: Number(row.default_payment_fee_percent ?? row.defaultPaymentFeePercent ?? fallbackSettings.defaultPaymentFeePercent ?? DEFAULT_SETTINGS.defaultPaymentFeePercent),
     defaultMarketplaceFeePercent: Number(row.default_marketplace_fee_percent ?? row.defaultMarketplaceFeePercent ?? fallbackSettings.defaultMarketplaceFeePercent ?? DEFAULT_SETTINGS.defaultMarketplaceFeePercent),
     defaultTaxPercent: Number(row.default_tax_percent ?? row.defaultTaxPercent ?? fallbackSettings.defaultTaxPercent ?? DEFAULT_SETTINGS.defaultTaxPercent),
-    updatedAt: row.updated_at ? String(row.updated_at) : (fallbackSettings.updatedAt || undefined)
+    autoRefreshOrders: typeof row.auto_refresh_orders === 'boolean'
+      ? row.auto_refresh_orders
+      : (typeof row.autoRefreshOrders === 'boolean' ? row.autoRefreshOrders : (fallbackSettings.autoRefreshOrders ?? true)),
+    updatedAt: row.updated_at ? String(row.updated_at) : (fallbackSettings.updatedAt || undefined),
+    version: typeof row.version === 'number' ? row.version : (fallbackSettings.version ?? undefined)
   };
 }
 
 /**
  * Converte o formato TypeScript Settings (camelCase) para o registro em snake_case do Supabase.
+ * Envia valores definidos para permitir diferenciação precisa entre omissão e valor vazio intencional.
  */
 export function settingsToFullRow(settings: Settings, userId: string): SupabaseSettingsRow {
-  return {
+  const row: SupabaseSettingsRow = {
     user_id: userId,
-    default_energy_cost: settings.defaultEnergyCost,
-    default_filament_cost: settings.defaultFilamentCost,
-    default_profit_margin: settings.defaultProfitMargin,
-    hourly_labor_rate: settings.hourlyLaborRate,
-    hourly_maintenance_cost: settings.hourlyMaintenanceCost,
-    currency: settings.currency || 'R$',
-    filament_brands: settings.filamentBrands || [],
-    categories: settings.categories || [],
-    business_info: settings.businessInfo || {},
-    default_packaging_cost: settings.defaultPackagingCost ?? 2.50,
-    default_other_costs: settings.defaultOtherCosts ?? 0.00,
-    default_payment_fee_percent: settings.defaultPaymentFeePercent ?? 3.99,
-    default_marketplace_fee_percent: settings.defaultMarketplaceFeePercent ?? 0.00,
-    default_tax_percent: settings.defaultTaxPercent ?? 6.00,
-    updated_at: new Date().toISOString()
+    default_energy_cost: typeof settings.defaultEnergyCost === 'number' ? settings.defaultEnergyCost : DEFAULT_SETTINGS.defaultEnergyCost,
+    default_filament_cost: typeof settings.defaultFilamentCost === 'number' ? settings.defaultFilamentCost : DEFAULT_SETTINGS.defaultFilamentCost,
+    default_profit_margin: typeof settings.defaultProfitMargin === 'number' ? settings.defaultProfitMargin : DEFAULT_SETTINGS.defaultProfitMargin,
+    hourly_labor_rate: typeof settings.hourlyLaborRate === 'number' ? settings.hourlyLaborRate : DEFAULT_SETTINGS.hourlyLaborRate,
+    hourly_maintenance_cost: typeof settings.hourlyMaintenanceCost === 'number' ? settings.hourlyMaintenanceCost : DEFAULT_SETTINGS.hourlyMaintenanceCost,
+    currency: settings.currency || DEFAULT_SETTINGS.currency || 'R$',
+    filament_brands: settings.filamentBrands || DEFAULT_SETTINGS.filamentBrands,
+    categories: settings.categories || DEFAULT_SETTINGS.categories,
+    business_info: settings.businessInfo || DEFAULT_SETTINGS.businessInfo || {},
+    default_packaging_cost: typeof settings.defaultPackagingCost === 'number' ? settings.defaultPackagingCost : DEFAULT_SETTINGS.defaultPackagingCost,
+    default_other_costs: typeof settings.defaultOtherCosts === 'number' ? settings.defaultOtherCosts : DEFAULT_SETTINGS.defaultOtherCosts,
+    default_payment_fee_percent: typeof settings.defaultPaymentFeePercent === 'number' ? settings.defaultPaymentFeePercent : DEFAULT_SETTINGS.defaultPaymentFeePercent,
+    default_marketplace_fee_percent: typeof settings.defaultMarketplaceFeePercent === 'number' ? settings.defaultMarketplaceFeePercent : DEFAULT_SETTINGS.defaultMarketplaceFeePercent,
+    default_tax_percent: typeof settings.defaultTaxPercent === 'number' ? settings.defaultTaxPercent : DEFAULT_SETTINGS.defaultTaxPercent,
+    auto_refresh_orders: typeof settings.autoRefreshOrders === 'boolean' ? settings.autoRefreshOrders : true,
+    updated_at: new Date().toISOString(),
+    version: settings.version ?? undefined
   };
+
+  return row;
 }
+
+/**
+ * Alias de compatibilidade para settingsToFullRow
+ */
+export const settingsToRow = settingsToFullRow;
 
 /**
  * Retorna apenas o payload estritamente compatível com as colunas já confirmadas no Supabase
@@ -221,12 +240,14 @@ export interface SaveRemoteSettingsResult {
   requiresMigration: boolean;
   conflict?: boolean;
   remoteUpdatedAt?: string;
+  remoteVersion?: number;
+  newVersion?: number;
   error: string | null;
 }
 
 /**
  * Salva configurações no Supabase com estratégia segura e transparente:
- * 1. Verifica concorrência/timestamp de outro dispositivo para prevenir sobrescrita acidental (conflito)
+ * 1. Verifica concorrência/versão de outro dispositivo para prevenir sobrescrita acidental (conflito)
  * 2. Tenta salvar o payload completo snake_case com todas as colunas
  * 3. Se o banco remoto ainda não tiver as novas colunas (PGRST204 / 42703), salva as colunas base no Supabase
  *    e sinaliza requiresMigration: true para que o usuário seja informado com precisão.
@@ -234,14 +255,19 @@ export interface SaveRemoteSettingsResult {
 export async function saveRemoteSettings(
   userId: string,
   settings: Settings,
-  options?: { force?: boolean }
+  options?: { force?: boolean; expectedVersion?: number }
 ): Promise<SaveRemoteSettingsResult> {
   const fullRow = settingsToFullRow(settings, userId);
 
   try {
-    // 1. TENTATIVA PRIMÁRIA ATÔMICA: Execução via função RPC no banco (com bloqueio FOR UPDATE)
+    // 1. TENTATIVA PRIMÁRIA ATÔMICA: Execução via função RPC no banco (com controle de versão inteiro OCC)
     try {
+      const expectedVer = typeof options?.expectedVersion === 'number'
+        ? options.expectedVersion
+        : (typeof settings.version === 'number' ? settings.version : null);
+
       const { data: rpcData, error: rpcError } = await supabase.rpc('save_settings_atomic', {
+        p_expected_version: expectedVer,
         p_expected_updated_at: settings.updatedAt || null,
         p_force: Boolean(options?.force),
         p_settings: fullRow
@@ -254,20 +280,34 @@ export async function saveRemoteSettings(
             cloudSyncedFull: false,
             requiresMigration: false,
             conflict: true,
+            remoteVersion: rpcData.remote_version,
             remoteUpdatedAt: rpcData.remote_updated_at,
-            error: rpcData.error || 'Conflito de concorrência: o registro foi atualizado por outro dispositivo.'
+            error: rpcData.error || 'Conflito de versão: o registro foi atualizado em outro dispositivo.'
           };
         }
 
         if (rpcData.success) {
+          if (typeof rpcData.version === 'number') {
+            settings.version = rpcData.version;
+          }
           settings.updatedAt = rpcData.updated_at || fullRow.updated_at || new Date().toISOString();
           return {
             success: true,
             cloudSyncedFull: true,
             requiresMigration: false,
+            newVersion: rpcData.version,
             error: null
           };
         }
+
+        // Se a RPC rejeitou a operação (validação de payload inválido, etc.), não recorre a fallback cego
+        return {
+          success: false,
+          cloudSyncedFull: false,
+          requiresMigration: false,
+          conflict: false,
+          error: rpcData.error || 'Validação de configurações rejeitada pelo banco.'
+        };
       }
     } catch (rpcErr) {
       console.warn('RPC save_settings_atomic ainda não instalado no banco, recorrendo ao fallback:', rpcErr);
@@ -433,8 +473,8 @@ export async function processAndUploadLogo(
       } else {
         return {
           url: compressed.dataUrl,
-          isCloudStorage: false,
-          notice: 'Logotipo salvo de forma compacta no cadastro. O bucket PARTS-IMAGES não possui política pública ativa.'
+          isCloudStorage: true,
+          notice: 'Logotipo sincronizado no Supabase Storage (bucket privado PARTS-IMAGES protegido por RLS).'
         };
       }
     }
@@ -445,6 +485,6 @@ export async function processAndUploadLogo(
   return {
     url: compressed.dataUrl,
     isCloudStorage: false,
-    notice: 'Logotipo salvo de forma compacta no cadastro. Para hospedar na nuvem, configure o bucket PARTS-IMAGES no Supabase.'
+    notice: 'Logotipo salvo no cadastro. Para sincronizar na nuvem, configure o bucket PARTS-IMAGES no Supabase.'
   };
 }

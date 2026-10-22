@@ -163,7 +163,9 @@ export interface Settings {
   defaultPaymentFeePercent?: number; // Taxa de meio de pagamento padrão (%)
   defaultMarketplaceFeePercent?: number; // Comissão de marketplace padrão (%)
   defaultTaxPercent?: number; // Impostos padrão (%)
+  autoRefreshOrders?: boolean; // Atualização automática de pedidos
   updatedAt?: string; // Timestamp ISO da última atualização na nuvem/local
+  version?: number; // Versão sequencial inteira (OCC / CAS) incrementada pelo banco
 }
 
 export interface User {

@@ -20,7 +20,7 @@ interface AppContextType {
   printers: Printer[];
   settings: Settings;
   settingsSyncState: SettingsSyncState;
-  settingsConflict: { remoteUpdatedAt: string; pendingSettings: Settings } | null;
+  settingsConflict: { remoteUpdatedAt: string; remoteVersion?: number; pendingSettings: Settings } | null;
   resolveConflict: (choice: 'keep_remote' | 'overwrite_remote') => Promise<void>;
   user: User | null;
   loading: boolean;
@@ -30,7 +30,7 @@ interface AppContextType {
   setOrders: (orders: Order[]) => void;
   setFilaments: (filaments: Filament[]) => void;
   setPrinters: (printers: Printer[]) => void;
-  setSettings: (settings: Settings, options?: { force?: boolean }) => Promise<boolean>;
+  setSettings: (settings: Settings, options?: { force?: boolean; expectedVersion?: number }) => Promise<boolean>;
   setUser: (user: User | null) => void;
   logout: () => Promise<void>;
   refreshData: () => Promise<void>;
@@ -54,7 +54,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [printers, setPrintersState] = useState<Printer[]>([]);
   const [settings, setSettingsState] = useState<Settings>(DEFAULT_SETTINGS);
   const [settingsSyncState, setSettingsSyncState] = useState<SettingsSyncState>('synced');
-  const [settingsConflict, setSettingsConflict] = useState<{ remoteUpdatedAt: string; pendingSettings: Settings } | null>(null);
+  const [settingsConflict, setSettingsConflict] = useState<{ remoteUpdatedAt: string; remoteVersion?: number; pendingSettings: Settings } | null>(null);
   const [loading, setLoading] = useState(true);
   const [dbError, setDbError] = useState<string | null>(null);
 
@@ -227,7 +227,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const setSettings = async (newSettings: Settings, options?: { force?: boolean }): Promise<boolean> => {
+  const setSettings = async (
+    newSettings: Settings, 
+    options?: { force?: boolean; expectedVersion?: number }
+  ): Promise<boolean> => {
     setSettingsSyncState('saving');
 
     // 1. Armazenamento local imediato (como cache/offline fallback isolado por usuário)
@@ -247,10 +250,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (result.conflict) {
         setSettingsConflict({
           remoteUpdatedAt: result.remoteUpdatedAt || new Date().toISOString(),
+          remoteVersion: result.remoteVersion,
           pendingSettings: newSettings
         });
         setSettingsSyncState('pending_local');
-        setDbError('Conflito de sincronização: este cadastro foi alterado em outro dispositivo mais recentemente.');
+        setDbError('Conflito de sincronização: este cadastro foi alterado em outro dispositivo.');
         return false;
       }
 
@@ -291,8 +295,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await refreshData();
     } else if (choice === 'overwrite_remote' && settingsConflict) {
       const toSave = settingsConflict.pendingSettings;
-      setSettingsConflict(null);
-      await setSettings(toSave, { force: true });
+      const expectedVersion = settingsConflict.remoteVersion;
+      const cachedConflict = { ...settingsConflict };
+      
+      const ok = await setSettings(toSave, { force: true, expectedVersion });
+      if (ok) {
+        setSettingsConflict(null);
+      } else {
+        // Se a sobrescrita foi rejeitada (ex: versão remota mudou de novo ou erro), não limpa o conflito
+        setSettingsConflict(prev => prev || cachedConflict);
+      }
     }
   };
 

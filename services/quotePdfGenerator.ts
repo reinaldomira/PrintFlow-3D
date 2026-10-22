@@ -1,6 +1,7 @@
 import { jsPDF } from 'jspdf';
 import { Order, Customer, Part, Filament, Settings } from '../types';
 import { formatCurrency } from '../constants';
+import { supabase } from './supabase';
 
 interface QuotePdfParams {
   order: Order;
@@ -43,13 +44,48 @@ function safeAddImage(
 }
 
 /**
- * Safely loads an image as base64 data URL for jsPDF embedding
+ * Safely loads an image as base64 data URL for jsPDF embedding.
+ * Supports Data URLs directly, private Supabase Storage URLs via temporary signed URLs,
+ * and external CORS-accessible HTTP URLs.
  */
 async function getImageDataUrl(url?: string): Promise<string | null> {
   if (!url) return null;
   if (url.startsWith('data:image')) return url;
+  
+  let fetchUrl = url;
+
+  // Se for uma imagem hospedada no Supabase Storage (bucket PARTS-IMAGES),
+  // extrai o caminho relativo exato (ex: 'logos/{userId}/logo.jpg' ou '{userId}/{timestamp}.jpg')
+  // e obtém URL assinada temporária (120s) para garantir leitura com bucket privado.
+  const isStorageImage = url.includes('PARTS-IMAGES') || url.startsWith('logos/') || /^[0-9a-fA-F-]{36}\//.test(url);
+  if (isStorageImage) {
+    try {
+      let relativePath = url;
+      if (url.includes('PARTS-IMAGES/')) {
+        const parts = url.split('PARTS-IMAGES/');
+        relativePath = parts[parts.length - 1]?.split('?')[0] || '';
+      }
+      
+      // Remove barras iniciais se houver
+      relativePath = relativePath.replace(/^\/+/, '');
+
+      if (relativePath && !relativePath.startsWith('http')) {
+        const decodedPath = decodeURIComponent(relativePath);
+        const { data: signed, error: signError } = await supabase.storage
+          .from('PARTS-IMAGES')
+          .createSignedUrl(decodedPath, 120);
+
+        if (!signError && signed?.signedUrl) {
+          fetchUrl = signed.signedUrl;
+        }
+      }
+    } catch (signErr) {
+      console.warn('Tentativa de obter signed URL no Storage falhou, tentando URL direta:', signErr);
+    }
+  }
+
   try {
-    const res = await fetch(url, { mode: 'cors' });
+    const res = await fetch(fetchUrl, { mode: 'cors' });
     if (!res.ok) return null;
     const blob = await res.blob();
     return new Promise((resolve) => {
@@ -59,7 +95,7 @@ async function getImageDataUrl(url?: string): Promise<string | null> {
       reader.readAsDataURL(blob);
     });
   } catch (err) {
-    console.warn('Não foi possível carregar imagem para o PDF:', err);
+    console.warn('Não foi possível carregar imagem para o PDF (mantendo geração limpa):', err);
     return null;
   }
 }
