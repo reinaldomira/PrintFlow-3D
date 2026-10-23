@@ -1,14 +1,24 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { OrderStatus } from '../types';
 import { normalizeOrderStatus } from '../utils/statusUtils';
 import { supabase } from '../services/supabase';
 import { formatCurrency } from '../constants';
-import { Archive, Search, Trash2, Calendar, ShoppingBag, RotateCcw } from 'lucide-react';
+import { Archive, Search, Trash2, Calendar, ShoppingBag, RotateCcw, CheckCircle2, AlertTriangle, X } from 'lucide-react';
+import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 
-const History: React.FC = () => {
-  const { orders, refreshData, customers, parts } = useApp();
-  const [searchTerm, setSearchTerm] = React.useState('');
+export const History: React.FC = () => {
+  const { orders, setOrders, refreshData, customers, parts } = useApp();
+  const [searchTerm, setSearchTerm] = useState('');
+  
+  // Confirmações sem bloqueio de janela (substitui window.confirm e window.alert)
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; customerName: string; code: string } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const [revertTarget, setRevertTarget] = useState<{ id: string; customerName: string; code: string } | null>(null);
+  const [isReverting, setIsReverting] = useState(false);
+
+  const [actionNotice, setActionNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const completedOrders = useMemo(() => {
     return orders.filter(o => {
@@ -18,27 +28,53 @@ const History: React.FC = () => {
     }).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [orders, customers, searchTerm]);
 
-  const revertStatus = async (id: string) => {
-    if (confirm('Deseja mover este pedido de volta para a fila de Produção?')) {
-      try {
-        const { error } = await supabase.from('orders').update({ status: OrderStatus.PRODUCTION }).eq('id', id);
-        if (error) throw error;
-        await refreshData();
-      } catch (err: any) {
-        alert('Erro ao atualizar status: ' + err.message);
-      }
+  const confirmRevertStatus = async () => {
+    if (!revertTarget) return;
+    setIsReverting(true);
+    const idToRevert = revertTarget.id;
+    const code = revertTarget.code;
+
+    try {
+      // Atualização otimista
+      setOrders(orders.map(o => o.id === idToRevert ? { ...o, status: OrderStatus.PRODUCTION } : o));
+      const { error } = await supabase.from('orders').update({ status: OrderStatus.PRODUCTION }).eq('id', idToRevert);
+      if (error) throw error;
+
+      setActionNotice({ type: 'success', message: `Pedido #${code} reaberto e movido para a fila de Produção!` });
+      setTimeout(() => setActionNotice(null), 3500);
+      setRevertTarget(null);
+      await refreshData();
+    } catch (err: any) {
+      console.error('Erro ao reabrir pedido:', err);
+      setActionNotice({ type: 'error', message: 'Erro ao reabrir pedido: ' + (err.message || 'Falha de comunicação') });
+      await refreshData();
+    } finally {
+      setIsReverting(false);
     }
   };
 
-  const deleteOrder = async (id: string) => {
-    if (confirm('Deseja excluir este registro histórico permanentemente do banco de dados?')) {
-      try {
-        const { error } = await supabase.from('orders').delete().eq('id', id);
-        if (error) throw error;
-        await refreshData();
-      } catch (err) {
-        alert('Erro ao excluir do banco de dados');
-      }
+  const confirmDeleteOrder = async () => {
+    if (!deleteTarget) return;
+    setIsDeleting(true);
+    const idToDelete = deleteTarget.id;
+    const code = deleteTarget.code;
+
+    try {
+      // Atualização otimista
+      setOrders(orders.filter(o => o.id !== idToDelete));
+      const { error } = await supabase.from('orders').delete().eq('id', idToDelete);
+      if (error) throw error;
+
+      setActionNotice({ type: 'success', message: `Pedido #${code} excluído do histórico com sucesso!` });
+      setTimeout(() => setActionNotice(null), 3500);
+      setDeleteTarget(null);
+      await refreshData();
+    } catch (err: any) {
+      console.error('Erro ao excluir histórico:', err);
+      setActionNotice({ type: 'error', message: 'Erro ao excluir do banco de dados: ' + (err.message || 'Falha na requisição') });
+      await refreshData();
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -61,6 +97,22 @@ const History: React.FC = () => {
         </div>
       </div>
 
+      {actionNotice && (
+        <div className={`p-4 rounded-2xl text-xs font-semibold flex items-center justify-between border animate-in fade-in ${
+          actionNotice.type === 'success'
+            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+            : 'bg-rose-500/10 border-rose-500/30 text-rose-400'
+        }`}>
+          <div className="flex items-center gap-2.5">
+            {actionNotice.type === 'success' ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
+            <span>{actionNotice.message}</span>
+          </div>
+          <button onClick={() => setActionNotice(null)} className="text-zinc-400 hover:text-white p-1">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       <div className="space-y-4">
         {completedOrders.length === 0 ? (
           <div className="text-center py-20 bg-zinc-900/30 rounded-[2.5rem] border border-dashed border-zinc-800">
@@ -70,6 +122,9 @@ const History: React.FC = () => {
         ) : (
           completedOrders.map(order => {
             const customer = customers.find(c => c.id === order.customerId);
+            const customerName = customer?.name || 'Cliente Balcão';
+            const orderCode = order.id.slice(0, 5).toUpperCase();
+
             return (
               <div key={order.id} className="bg-zinc-900/50 border border-zinc-800/50 rounded-3xl overflow-hidden hover:bg-zinc-900 transition-all group">
                 <div className="p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-6">
@@ -79,7 +134,7 @@ const History: React.FC = () => {
                     </div>
                     <div>
                       <div className="flex items-center gap-2">
-                        <h3 className="font-black text-zinc-100 text-lg">{customer?.name || 'Cliente Removido'}</h3>
+                        <h3 className="font-black text-zinc-100 text-lg">{customerName}</h3>
                         <span className="text-[10px] px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400 font-mono">
                           {order.paymentMethod || 'Pix'}
                         </span>
@@ -91,7 +146,7 @@ const History: React.FC = () => {
                         </div>
                         <div className="flex items-center gap-1.5 bg-zinc-800 px-2 py-0.5 rounded text-[10px] font-bold uppercase">
                           <ShoppingBag className="w-3 h-3" />
-                          #{order.id.slice(0, 4)}
+                          #{orderCode}
                         </div>
                         <span className="text-[10px] font-bold text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
                           Entregue
@@ -112,7 +167,7 @@ const History: React.FC = () => {
 
                     {/* Botão de Reverter para Produção */}
                     <button 
-                      onClick={() => revertStatus(order.id)}
+                      onClick={() => setRevertTarget({ id: order.id, customerName, code: orderCode })}
                       className="p-3 bg-zinc-800 text-zinc-400 hover:text-emerald-400 hover:bg-emerald-500/10 rounded-2xl transition-all active:scale-90 flex items-center gap-1.5 text-xs font-bold"
                       title="Mover de volta para Produção"
                     >
@@ -121,7 +176,7 @@ const History: React.FC = () => {
                     </button>
 
                     <button 
-                      onClick={() => deleteOrder(order.id)}
+                      onClick={() => setDeleteTarget({ id: order.id, customerName, code: orderCode })}
                       className="p-3 bg-zinc-800 text-zinc-600 hover:text-red-500 hover:bg-red-500/10 rounded-2xl transition-all active:scale-90"
                       title="Excluir do banco"
                     >
@@ -150,6 +205,31 @@ const History: React.FC = () => {
           })
         )}
       </div>
+
+      {/* Modal de Confirmação de Reabertura de Pedido */}
+      <ConfirmDeleteModal
+        isOpen={!!revertTarget}
+        title="Reabrir Pedido"
+        itemName={revertTarget ? `Pedido #${revertTarget.code} (${revertTarget.customerName})` : ''}
+        description="Deseja mover este pedido de volta para a fila de Produção?"
+        confirmText="Sim, Reabrir Pedido"
+        isDestructive={false}
+        isLoading={isReverting}
+        onConfirm={confirmRevertStatus}
+        onClose={() => !isReverting && setRevertTarget(null)}
+      />
+
+      {/* Modal de Confirmação de Exclusão do Histórico */}
+      <ConfirmDeleteModal
+        isOpen={!!deleteTarget}
+        title="Excluir Registro Histórico"
+        itemName={deleteTarget ? `Pedido #${deleteTarget.code} (${deleteTarget.customerName})` : ''}
+        description="Deseja excluir este registro histórico permanentemente do banco de dados? Esta ação não pode ser desfeita."
+        confirmText="Sim, Excluir Registro"
+        isLoading={isDeleting}
+        onConfirm={confirmDeleteOrder}
+        onClose={() => !isDeleting && setDeleteTarget(null)}
+      />
     </div>
   );
 };

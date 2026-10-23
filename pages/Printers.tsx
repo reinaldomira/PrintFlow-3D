@@ -1,16 +1,22 @@
-
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { Printer } from '../types';
 import { supabase } from '../services/supabase';
-import { Plus, Search, Trash2, Edit2, X, Monitor, Zap, CheckCircle, AlertTriangle, Power, Loader2 } from 'lucide-react';
+import { 
+  Plus, Search, Trash2, Edit2, X, Monitor, Zap, 
+  CheckCircle, AlertTriangle, Power, Loader2, CheckCircle2 
+} from 'lucide-react';
+import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 
 const Printers: React.FC = () => {
-  const { printers, refreshData, user } = useApp();
+  const { printers, setPrinters, refreshData, user } = useApp();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [editingPrinter, setEditingPrinter] = useState<Partial<Printer> | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [actionNotice, setActionNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const filteredPrinters = printers.filter(p => 
     p.brand.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -40,18 +46,36 @@ const Printers: React.FC = () => {
       await refreshData();
       setIsModalOpen(false);
       setEditingPrinter(null);
+      setActionNotice({ type: 'success', message: 'Impressora salva com sucesso!' });
+      setTimeout(() => setActionNotice(null), 3000);
     } catch (err: any) {
-      alert('Erro Supabase: ' + err.message + '\n\nCertifique-se de que a tabela "printers" existe.');
+      setActionNotice({ type: 'error', message: 'Erro ao salvar máquina: ' + (err.message || 'Verifique sua conexão.') });
     } finally {
       setIsSaving(false);
     }
   };
 
-  const deletePrinter = async (id: string) => {
-    if (confirm('Deseja excluir esta impressora permanentemente?')) {
-      const { error } = await supabase.from('printers').delete().eq('id', id);
-      if (error) alert("Erro ao deletar: " + error.message);
-      refreshData();
+  const confirmDeletePrinter = async () => {
+    if (!deleteTarget) return;
+    setIsDeleting(true);
+    const idToDelete = deleteTarget.id;
+
+    try {
+      // Atualização otimista imediata para feedback instantâneo
+      setPrinters(printers.filter(p => p.id !== idToDelete));
+      const { error } = await supabase.from('printers').delete().eq('id', idToDelete);
+      if (error) throw error;
+
+      setActionNotice({ type: 'success', message: 'Impressora excluída com sucesso!' });
+      setTimeout(() => setActionNotice(null), 3000);
+      setDeleteTarget(null);
+      await refreshData();
+    } catch (err: any) {
+      console.error('Erro ao deletar impressora:', err);
+      setActionNotice({ type: 'error', message: 'Erro ao excluir impressora: ' + (err.message || 'Falha no banco de dados') });
+      await refreshData();
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -75,18 +99,34 @@ const Printers: React.FC = () => {
             setEditingPrinter({ brand: '', model: '', power: 350, status: 'Ativa' });
             setIsModalOpen(true);
           }}
-          className="bg-emerald-500 hover:bg-emerald-600 text-zinc-950 px-4 py-2 rounded-xl flex items-center gap-2 font-bold"
+          className="bg-emerald-500 hover:bg-emerald-600 text-zinc-950 px-4 py-2 rounded-xl flex items-center gap-2 font-bold transition-all active:scale-95 shadow-lg shadow-emerald-500/20"
         >
           <Plus className="w-5 h-5" />
           <span className="hidden sm:inline">Nova Impressora</span>
         </button>
       </div>
 
+      {actionNotice && (
+        <div className={`p-3.5 rounded-xl text-xs font-semibold flex items-center justify-between border animate-in fade-in ${
+          actionNotice.type === 'success' 
+            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' 
+            : 'bg-rose-500/10 border-rose-500/30 text-rose-400'
+        }`}>
+          <div className="flex items-center gap-2">
+            {actionNotice.type === 'success' ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
+            <span>{actionNotice.message}</span>
+          </div>
+          <button onClick={() => setActionNotice(null)} className="text-zinc-400 hover:text-white">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-500" />
         <input 
           type="text" placeholder="Buscar máquinas no banco..."
-          className="w-full pl-10 pr-4 py-3 bg-zinc-900 border border-zinc-800 rounded-xl outline-none"
+          className="w-full pl-10 pr-4 py-3 bg-zinc-900 border border-zinc-800 rounded-xl outline-none focus:border-emerald-500 transition-colors"
           value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
         />
       </div>
@@ -97,8 +137,26 @@ const Printers: React.FC = () => {
             <div className="flex items-start justify-between mb-4">
               <div className="w-12 h-12 bg-zinc-800 rounded-xl flex items-center justify-center text-emerald-500"><Monitor /></div>
               <div className="flex gap-2">
-                <button onClick={() => { setEditingPrinter(printer); setIsModalOpen(true); }} className="p-2 bg-zinc-800 text-zinc-400 rounded-lg hover:text-zinc-100"><Edit2 className="w-4 h-4" /></button>
-                <button onClick={() => deletePrinter(printer.id)} className="p-2 bg-zinc-800 text-zinc-400 rounded-lg hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
+                <button 
+                  onClick={() => { setEditingPrinter(printer); setIsModalOpen(true); }} 
+                  className="p-2 bg-zinc-800 text-zinc-400 rounded-lg hover:text-zinc-100 transition-colors"
+                  title="Editar impressora"
+                >
+                  <Edit2 className="w-4 h-4" />
+                </button>
+                <button 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setDeleteTarget({
+                      id: printer.id,
+                      name: `${printer.brand} ${printer.model}`
+                    });
+                  }} 
+                  className="p-2 bg-zinc-800 text-zinc-400 rounded-lg hover:text-red-500 hover:bg-red-500/10 transition-colors"
+                  title="Excluir impressora"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
               </div>
             </div>
             <h3 className="font-bold text-lg">{printer.brand}</h3>
@@ -122,7 +180,7 @@ const Printers: React.FC = () => {
           <div className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-lg shadow-2xl">
             <div className="p-6 border-b border-zinc-800 flex items-center justify-between">
               <h3 className="text-xl font-bold">{editingPrinter?.id ? 'Editar Máquina' : 'Nova Máquina'}</h3>
-              <button onClick={() => setIsModalOpen(false)} className="text-zinc-500"><X /></button>
+              <button onClick={() => setIsModalOpen(false)} className="text-zinc-500 hover:text-white"><X /></button>
             </div>
             <form onSubmit={handleSave} className="p-6 space-y-4">
               <div className="grid grid-cols-2 gap-4">
@@ -144,13 +202,25 @@ const Printers: React.FC = () => {
                   <option value="Inativa">Inativa</option>
                 </select>
               </div>
-              <button type="submit" disabled={isSaving} className="w-full py-3 bg-emerald-500 text-zinc-950 font-bold rounded-xl flex items-center justify-center gap-2 mt-2">
-                {isSaving ? <Loader2 className="animate-spin" /> : 'SALVAR'}
+              <button type="submit" disabled={isSaving} className="w-full py-3 bg-emerald-500 text-zinc-950 font-bold rounded-xl flex items-center justify-center gap-2 mt-2 transition-all active:scale-95 shadow-lg shadow-emerald-500/20">
+                {isSaving ? <Loader2 className="animate-spin w-5 h-5" /> : 'SALVAR'}
               </button>
             </form>
           </div>
         </div>
       )}
+
+      {/* Modal de Confirmação de Exclusão de Impressora */}
+      <ConfirmDeleteModal
+        isOpen={!!deleteTarget}
+        title="Excluir Impressora"
+        itemName={deleteTarget?.name}
+        description="Deseja realmente excluir esta impressora permanentemente? Esta ação não pode ser desfeita."
+        confirmText="Sim, Excluir Impressora"
+        isLoading={isDeleting}
+        onConfirm={confirmDeletePrinter}
+        onClose={() => setDeleteTarget(null)}
+      />
     </div>
   );
 };

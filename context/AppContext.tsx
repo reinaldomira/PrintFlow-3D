@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { Part, Customer, Order, Settings, User, Filament, Printer, BusinessInfo } from '../types';
+import { Part, Customer, Order, Settings, User, Filament, Printer, BusinessInfo, Supply, PrintFailure } from '../types';
 import { supabase } from '../services/supabase';
 import { 
   SettingsSyncState, 
@@ -18,6 +18,8 @@ interface AppContextType {
   orders: Order[];
   filaments: Filament[];
   printers: Printer[];
+  supplies: Supply[];
+  failures: PrintFailure[];
   settings: Settings;
   settingsSyncState: SettingsSyncState;
   settingsConflict: { remoteUpdatedAt: string; remoteVersion?: number; pendingSettings: Settings } | null;
@@ -30,6 +32,8 @@ interface AppContextType {
   setOrders: (orders: Order[]) => void;
   setFilaments: (filaments: Filament[]) => void;
   setPrinters: (printers: Printer[]) => void;
+  setSupplies: (supplies: Supply[]) => void;
+  setFailures: (failures: PrintFailure[]) => void;
   setSettings: (settings: Settings, options?: { force?: boolean; expectedVersion?: number }) => Promise<boolean>;
   setUser: (user: User | null) => void;
   logout: () => Promise<void>;
@@ -52,6 +56,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [orders, setOrdersState] = useState<Order[]>([]);
   const [filaments, setFilamentsState] = useState<Filament[]>([]);
   const [printers, setPrintersState] = useState<Printer[]>([]);
+  const [supplies, setSuppliesState] = useState<Supply[]>([]);
+  const [failures, setFailuresState] = useState<PrintFailure[]>(() => {
+    try {
+      const stored = localStorage.getItem('printflow_failures');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch (e) {}
+    return [];
+  });
   const [settings, setSettingsState] = useState<Settings>(DEFAULT_SETTINGS);
   const [settingsSyncState, setSettingsSyncState] = useState<SettingsSyncState>('synced');
   const [settingsConflict, setSettingsConflict] = useState<{ remoteUpdatedAt: string; remoteVersion?: number; pendingSettings: Settings } | null>(null);
@@ -76,6 +91,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setOrdersState([]);
         setFilamentsState([]);
         setPrintersState([]);
+        setSuppliesState([]);
         setSettingsState(DEFAULT_SETTINGS);
         setSettingsSyncState('synced');
         setSettingsConflict(null);
@@ -138,12 +154,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       };
 
-      const [partsRes, customersRes, ordersRes, filamentsRes, printersRes] = await Promise.all([
+      const [partsRes, customersRes, ordersRes, filamentsRes, printersRes, suppliesRes] = await Promise.all([
         fetchTable('parts', 'createdAt'),
         fetchTable('customers', 'name'),
         fetchTable('orders', 'createdAt'),
         fetchTable('filaments', 'brand'),
-        fetchTable('printers', 'brand')
+        fetchTable('printers', 'brand'),
+        fetchTable('supplies', 'name')
       ]);
 
       // Preserva dados já carregados para tabelas cuja consulta falhou (nunca substitui por null ou [])
@@ -152,6 +169,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (ordersRes.success && ordersRes.data !== null) setOrdersState(ordersRes.data);
       if (filamentsRes.success && filamentsRes.data !== null) setFilamentsState(filamentsRes.data);
       if (printersRes.success && printersRes.data !== null) setPrintersState(printersRes.data);
+      if (suppliesRes.success && suppliesRes.data !== null) {
+        const normalizedSupplies: Supply[] = (suppliesRes.data || []).map((row: any) => ({
+          id: row.id,
+          user_id: row.user_id,
+          name: row.name,
+          category: row.category || 'Outros',
+          quantity: Number(row.quantity) || 0,
+          minQuantity: Number(row.min_quantity ?? row.minQuantity ?? 5),
+          unitCost: Number(row.unit_cost ?? row.unitCost ?? 0),
+          packagePrice: Number(row.package_price ?? row.packagePrice ?? 0),
+          packageUnits: Number(row.package_units ?? row.packageUnits ?? 1),
+          supplier: row.supplier || undefined,
+          link: row.link || undefined,
+          notes: row.notes || undefined,
+          createdAt: row.created_at ?? row.createdAt ?? new Date().toISOString()
+        }));
+        setSuppliesState(normalizedSupplies);
+        try {
+          localStorage.setItem(`printflow_supplies_${user.id}`, JSON.stringify(normalizedSupplies));
+        } catch (e) {}
+      } else {
+        try {
+          const cached = localStorage.getItem(`printflow_supplies_${user.id}`);
+          if (cached) setSuppliesState(JSON.parse(cached));
+        } catch (e) {}
+      }
 
       // Consulta protegida de settings usando settingsService
       let settingsError: string | null = null;
@@ -308,6 +351,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const setSupplies = (newSupplies: Supply[]) => {
+    setSuppliesState(newSupplies);
+    if (user) {
+      try {
+        localStorage.setItem(`printflow_supplies_${user.id}`, JSON.stringify(newSupplies));
+      } catch (e) {}
+    }
+  };
+
+  const setFailures = (newFailures: PrintFailure[]) => {
+    setFailuresState(newFailures);
+    try {
+      localStorage.setItem('printflow_failures', JSON.stringify(newFailures));
+    } catch (e) {}
+  };
+
   const logout = async () => {
     await supabase.auth.signOut();
     setUser(null);
@@ -322,6 +381,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       orders, setOrders: setOrdersState, 
       filaments, setFilaments: setFilamentsState,
       printers, setPrinters: setPrintersState,
+      supplies, setSupplies,
+      failures, setFailures,
       settings, setSettings, 
       settingsSyncState,
       settingsConflict,

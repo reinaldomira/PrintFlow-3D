@@ -1,23 +1,31 @@
 import React, { useState, useMemo, useRef } from 'react';
 import { useApp } from '../context/AppContext';
-import { Part, PartRecipeItem } from '../types';
+import { Part, PartRecipeItem, PartSupplyItem } from '../types';
 import { supabase } from '../services/supabase';
-import { MATERIALS, calculatePartCosts, formatCurrency } from '../constants';
-import { Plus, Search, Trash2, Edit2, Upload, X, Layers, Image as ImageIcon, Loader2, PlusCircle, Camera, Monitor, Clock, Zap } from 'lucide-react';
+import { formatCurrency, calculatePartCosts, MATERIALS } from '../constants';
+import { 
+  Plus, Search, Trash2, Edit2, Upload, X, Layers, Image as ImageIcon, 
+  Loader2, PlusCircle, Camera, Monitor, Clock, Zap, CheckCircle2, AlertTriangle,
+  PackageCheck, Sparkles
+} from 'lucide-react';
+import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 
 const Catalog: React.FC = () => {
-  const { parts, settings, filaments, printers, user, refreshData } = useApp();
+  const { parts, setParts, settings, filaments, printers, supplies, user, refreshData } = useApp();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [imageNotice, setImageNotice] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [editingPart, setEditingPart] = useState<Partial<Part> | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [actionNotice, setActionNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const costs = useMemo(() => {
     if (!editingPart) return null;
-    return calculatePartCosts(editingPart, filaments, printers, settings);
-  }, [editingPart, filaments, printers, settings]);
+    return calculatePartCosts(editingPart, filaments, printers, settings, supplies);
+  }, [editingPart, filaments, printers, settings, supplies]);
 
   const compressImage = (file: File): Promise<{ blob: Blob; dataUrl: string }> => {
     return new Promise((resolve) => {
@@ -79,7 +87,7 @@ const Catalog: React.FC = () => {
         }
       } catch (err: any) {
         console.error('Erro processando foto:', err);
-        alert('Erro ao carregar foto: ' + err.message);
+        setImageNotice('Erro ao carregar foto: ' + err.message);
       } finally {
         setIsSaving(false);
       }
@@ -92,7 +100,7 @@ const Catalog: React.FC = () => {
     setIsSaving(true);
     
     try {
-      const calculated = calculatePartCosts(editingPart, filaments, printers, settings);
+      const calculated = calculatePartCosts(editingPart, filaments, printers, settings, supplies);
 
       const payload: any = { 
         user_id: user.id,
@@ -108,6 +116,7 @@ const Catalog: React.FC = () => {
         wastePercent: Number(editingPart.wastePercent) || 5,
         profitMargin: Number(editingPart.profitMargin) || settings.defaultProfitMargin,
         recipe: editingPart.recipe || [],
+        supplies: editingPart.supplies || [],
         imageUrl: editingPart.imageUrl || null,
         updatedAt: new Date().toISOString()
       };
@@ -115,9 +124,19 @@ const Catalog: React.FC = () => {
       let result;
       if (editingPart.id) {
         result = await supabase.from('parts').update(payload).eq('id', editingPart.id);
+        if (result.error && (result.error.message?.includes('supplies') || result.error.code === 'PGRST204' || result.error.code === '42703')) {
+          const fallbackPayload = { ...payload };
+          delete fallbackPayload.supplies;
+          result = await supabase.from('parts').update(fallbackPayload).eq('id', editingPart.id);
+        }
       } else {
         payload.createdAt = new Date().toISOString();
         result = await supabase.from('parts').insert([payload]);
+        if (result.error && (result.error.message?.includes('supplies') || result.error.code === 'PGRST204' || result.error.code === '42703')) {
+          const fallbackPayload = { ...payload };
+          delete fallbackPayload.supplies;
+          result = await supabase.from('parts').insert([fallbackPayload]);
+        }
       }
 
       if (result.error) throw result.error;
@@ -126,19 +145,38 @@ const Catalog: React.FC = () => {
       setIsModalOpen(false);
       setEditingPart(null);
       setImageNotice(null);
+      setActionNotice({ type: 'success', message: 'Modelo salvo com sucesso!' });
+      setTimeout(() => setActionNotice(null), 3000);
     } catch (err: any) {
       console.error('Erro salvar peça:', err);
-      alert('Erro ao salvar: ' + (err.message || 'Erro desconhecido. Verifique o Script SQL.'));
+      setActionNotice({ type: 'error', message: 'Erro ao salvar: ' + (err.message || 'Erro desconhecido. Verifique o banco.') });
     } finally {
       setIsSaving(false);
     }
   };
 
-  const deletePart = async (id: string) => {
-    if (!confirm('Excluir este modelo permanentemente?')) return;
-    const { error } = await supabase.from('parts').delete().eq('id', id);
-    if (error) alert('Erro ao excluir: ' + error.message);
-    else refreshData();
+  const confirmDeletePart = async () => {
+    if (!deleteTarget) return;
+    setIsDeleting(true);
+    const idToDelete = deleteTarget.id;
+
+    try {
+      // Atualização otimista imediata para resposta ágil
+      setParts(parts.filter(p => p.id !== idToDelete));
+      const { error } = await supabase.from('parts').delete().eq('id', idToDelete);
+      if (error) throw error;
+
+      setActionNotice({ type: 'success', message: 'Modelo excluído do catálogo com sucesso!' });
+      setTimeout(() => setActionNotice(null), 3000);
+      setDeleteTarget(null);
+      await refreshData();
+    } catch (err: any) {
+      console.error('Erro ao deletar peça:', err);
+      setActionNotice({ type: 'error', message: 'Erro ao excluir modelo: ' + (err.message || 'Falha no banco de dados') });
+      await refreshData();
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   const updateField = (field: keyof Part, value: any) => {
@@ -153,7 +191,10 @@ const Catalog: React.FC = () => {
   };
 
   const addRecipeItem = () => {
-    if (filaments.length === 0) return alert("Cadastre filamentos primeiro na aba Filamentos.");
+    if (filaments.length === 0) {
+      setActionNotice({ type: 'error', message: "Cadastre filamentos primeiro na aba Filamentos." });
+      return;
+    }
     const currentRecipe = editingPart?.recipe || [];
     updateField('recipe', [...currentRecipe, { filamentId: filaments[0].id, grams: 0 }]);
   };
@@ -163,6 +204,27 @@ const Catalog: React.FC = () => {
     currentRecipe.splice(index, 1);
     const newTotalWeight = currentRecipe.reduce((sum, item) => sum + item.grams, 0);
     setEditingPart(prev => ({ ...prev!, recipe: currentRecipe, weight: newTotalWeight || prev?.weight || 0 }));
+  };
+
+  const addSupplyItem = () => {
+    if (supplies.length === 0) {
+      setActionNotice({ type: 'error', message: "Cadastre insumos primeiro na aba Insumos (argolas, ímãs, botões, etc.)." });
+      return;
+    }
+    const currentSupplies = editingPart?.supplies || [];
+    updateField('supplies', [...currentSupplies, { supplyId: supplies[0].id, quantity: 1 }]);
+  };
+
+  const removeSupplyItem = (index: number) => {
+    const currentSupplies = [...(editingPart?.supplies || [])];
+    currentSupplies.splice(index, 1);
+    updateField('supplies', currentSupplies);
+  };
+
+  const updateSupplyItem = (index: number, field: keyof PartSupplyItem, value: any) => {
+    const currentSupplies = [...(editingPart?.supplies || [])];
+    currentSupplies[index] = { ...currentSupplies[index], [field]: value };
+    updateField('supplies', currentSupplies);
   };
 
   return (
@@ -180,6 +242,7 @@ const Catalog: React.FC = () => {
               material: 'PLA',
               weight: 0, 
               recipe: [], 
+              supplies: [],
               printTime: 0, 
               postProcessingTime: 0,
               printerId: printers[0]?.id || '',
@@ -195,6 +258,22 @@ const Catalog: React.FC = () => {
         </button>
       </div>
 
+      {actionNotice && (
+        <div className={`p-3.5 rounded-xl text-xs font-semibold flex items-center justify-between border animate-in fade-in ${
+          actionNotice.type === 'success' 
+            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' 
+            : 'bg-rose-500/10 border-rose-500/30 text-rose-400'
+        }`}>
+          <div className="flex items-center gap-2">
+            {actionNotice.type === 'success' ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
+            <span>{actionNotice.message}</span>
+          </div>
+          <button onClick={() => setActionNotice(null)} className="text-zinc-400 hover:text-white">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-500" />
         <input type="text" placeholder="Buscar no catálogo..." className="w-full pl-10 pr-4 py-3 bg-zinc-900 border border-zinc-800 rounded-xl outline-none"
@@ -203,7 +282,7 @@ const Catalog: React.FC = () => {
 
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
         {parts.filter(p => p.name.toLowerCase().includes(searchTerm.toLowerCase())).map(part => {
-          const partCostInfo = calculatePartCosts(part, filaments, printers, settings);
+          const partCostInfo = calculatePartCosts(part, filaments, printers, settings, supplies);
           const selectedPrinter = printers.find(pr => pr.id === part.printerId);
           return (
             <div key={part.id} className="bg-zinc-900 rounded-2xl border border-zinc-800 overflow-hidden group hover:border-emerald-500/50 transition-colors flex flex-col">
@@ -213,9 +292,31 @@ const Catalog: React.FC = () => {
                 ) : (
                   <div className="w-full h-full flex items-center justify-center text-zinc-700"><ImageIcon className="w-10 h-10" /></div>
                 )}
-                <div className="absolute top-2 right-2 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-all translate-x-2 group-hover:translate-x-0">
-                  <button onClick={() => { setEditingPart(part); setImageNotice(null); setIsModalOpen(true); }} className="p-2 bg-zinc-950/80 rounded-full text-zinc-100 hover:bg-emerald-500 hover:text-zinc-950"><Edit2 className="w-4 h-4" /></button>
-                  <button onClick={() => deletePart(part.id)} className="p-2 bg-zinc-950/80 rounded-full text-red-500 hover:bg-red-500 hover:text-white"><Trash2 className="w-4 h-4" /></button>
+                <div className="absolute top-2 right-2 flex flex-col gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all sm:translate-x-2 sm:group-hover:translate-x-0">
+                  <button 
+                    type="button"
+                    onClick={(e) => { 
+                      e.stopPropagation();
+                      setEditingPart({ ...part, supplies: part.supplies || [] }); 
+                      setImageNotice(null); 
+                      setIsModalOpen(true); 
+                    }} 
+                    className="p-2 bg-zinc-950/80 rounded-full text-zinc-100 hover:bg-emerald-500 hover:text-zinc-950 transition-colors shadow-md active:scale-95"
+                    title="Editar modelo"
+                  >
+                    <Edit2 className="w-4 h-4" />
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDeleteTarget({ id: part.id, name: part.name });
+                    }} 
+                    className="p-2 bg-zinc-950/80 rounded-full text-red-500 hover:bg-red-500 hover:text-white transition-colors shadow-md active:scale-95"
+                    title="Excluir modelo"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
                 </div>
               </div>
               <div className="p-4 flex-1 text-center sm:text-left flex flex-col justify-between">
@@ -370,6 +471,77 @@ const Catalog: React.FC = () => {
                 )}
               </div>
 
+              {/* Seção de Insumos & Componentes Adicionais */}
+              <div className="bg-zinc-800/30 rounded-2xl p-5 border border-zinc-800 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-zinc-100">
+                    <PackageCheck className="w-4 h-4 text-cyan-400" />
+                    <h4 className="font-black uppercase text-[10px] tracking-widest">Insumos & Componentes Extras (Argolas, Ímãs, Botões, etc.)</h4>
+                  </div>
+                  <button 
+                    type="button" 
+                    onClick={addSupplyItem} 
+                    className="text-cyan-400 font-bold text-[10px] uppercase hover:underline flex items-center gap-1.5"
+                  >
+                    <PlusCircle className="w-3.5 h-3.5" /> Adicionar Insumo
+                  </button>
+                </div>
+
+                {(!editingPart?.supplies || editingPart.supplies.length === 0) ? (
+                  <p className="text-zinc-600 text-[10px] font-bold uppercase text-center py-2 italic">
+                    Nenhum insumo extra vinculado. Para chaveiros, botões clicker ou caixas com ímãs, adicione insumos para compor o custo real da peça.
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {editingPart.supplies.map((item, idx) => {
+                      const selectedSup = supplies.find(s => s.id === item.supplyId);
+                      const unitCost = Number(selectedSup?.unitCost) || 0;
+                      const itemTotal = unitCost * (Number(item.quantity) || 0);
+
+                      return (
+                        <div key={idx} className="flex flex-col sm:flex-row gap-2 bg-zinc-900/50 p-2.5 rounded-xl border border-zinc-800 items-start sm:items-center">
+                          <select 
+                            className="flex-1 bg-zinc-800 p-2 rounded-lg text-xs font-bold border-none outline-none min-w-0 w-full sm:w-auto" 
+                            value={item.supplyId} 
+                            onChange={e => updateSupplyItem(idx, 'supplyId', e.target.value)}
+                          >
+                            {supplies.map(s => (
+                              <option key={s.id} value={s.id}>
+                                {s.name} ({s.category}) • Custo: {formatCurrency(s.unitCost)}/un
+                              </option>
+                            ))}
+                          </select>
+                          <div className="flex items-center gap-2 self-end sm:self-auto">
+                            <div className="flex items-center gap-1">
+                              <span className="text-[10px] font-bold text-zinc-500">Qtd:</span>
+                              <input 
+                                type="number" 
+                                min="1" 
+                                className="w-16 bg-zinc-800 p-2 rounded-lg text-xs font-black border-none text-right outline-none text-cyan-300" 
+                                value={item.quantity} 
+                                onChange={e => updateSupplyItem(idx, 'quantity', Math.max(1, Number(e.target.value)))} 
+                              />
+                              <span className="text-[10px] font-bold text-zinc-600">un</span>
+                            </div>
+                            <span className="text-xs font-mono font-bold text-cyan-400 min-w-[70px] text-right">
+                              {formatCurrency(itemTotal)}
+                            </span>
+                            <button 
+                              type="button" 
+                              onClick={() => removeSupplyItem(idx)} 
+                              className="text-zinc-600 hover:text-red-500 p-1"
+                              title="Remover insumo"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
               {/* Metricas de Custo */}
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                 <div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-800">
@@ -404,8 +576,9 @@ const Catalog: React.FC = () => {
 
               {/* Detalhamento de Custos */}
               <div className="bg-zinc-950 p-5 rounded-2xl border border-zinc-800 space-y-3">
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs text-zinc-400 pb-3 border-b border-zinc-800">
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs text-zinc-400 pb-3 border-b border-zinc-800">
                   <div>Material: <span className="text-zinc-200 font-bold">{formatCurrency(costs?.materialCost || 0)}</span></div>
+                  <div>Insumos: <span className="text-cyan-300 font-bold">{formatCurrency(costs?.suppliesCost || 0)}</span></div>
                   <div>Energia: <span className="text-zinc-200 font-bold">{formatCurrency(costs?.energyCost || 0)}</span></div>
                   <div>Mão de Obra: <span className="text-zinc-200 font-bold">{formatCurrency(costs?.laborCost || 0)}</span></div>
                   <div>Manutenção: <span className="text-zinc-200 font-bold">{formatCurrency(costs?.maintenanceCost || 0)}</span></div>
@@ -432,6 +605,18 @@ const Catalog: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Modal de Confirmação de Exclusão de Modelo do Catálogo */}
+      <ConfirmDeleteModal
+        isOpen={!!deleteTarget}
+        title="Excluir Modelo do Catálogo"
+        itemName={deleteTarget?.name}
+        description="Deseja realmente excluir este modelo permanentemente do seu catálogo? Esta ação não pode ser desfeita."
+        confirmText="Sim, Excluir Modelo"
+        isLoading={isDeleting}
+        onConfirm={confirmDeletePart}
+        onClose={() => setDeleteTarget(null)}
+      />
     </div>
   );
 };

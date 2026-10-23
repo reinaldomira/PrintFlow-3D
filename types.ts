@@ -81,6 +81,28 @@ export interface PartRecipeItem {
   grams: number;
 }
 
+export interface PartSupplyItem {
+  supplyId: string;
+  quantity: number;
+}
+
+export interface Supply {
+  id: string;
+  user_id?: string;
+  name: string;
+  category: string;
+  quantity: number;
+  minQuantity: number;
+  unitCost: number;
+  packagePrice?: number;
+  packageUnits?: number;
+  supplier?: string;
+  link?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface Part {
   id: string;
   name: string;
@@ -88,6 +110,7 @@ export interface Part {
   material: string; 
   weight: number; 
   recipe: PartRecipeItem[]; 
+  supplies?: PartSupplyItem[];
   printTime: number; 
   postProcessingTime: number; // Tempo humano gasto (slicing, acabamento, etc)
   printerId?: string;
@@ -134,6 +157,9 @@ export interface Order {
   createdAt: string;
   custosFinanceiros?: FinancialConfig;
   detalhesPrecificacao?: PricingBreakdown;
+  consumedFilaments?: Record<string, number>;
+  stockDeductionStatus?: 'none' | 'confirmed' | 'partial' | 'refunded';
+  stockUpdatedAt?: string;
 }
 
 export interface BusinessInfo {
@@ -186,3 +212,12 @@ export interface PrintFailure {
   date: string;
   notes?: string;
 }
+
+export interface DashboardCardConfig {
+  id: string;
+  title: string;
+  category: 'kpi' | 'pipeline' | 'charts' | 'lists' | 'widgets';
+  visible: boolean;
+  order: number;
+}
+

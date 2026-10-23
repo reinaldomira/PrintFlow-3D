@@ -11,6 +11,7 @@ const Login: React.FC = () => {
   const [isRegistering, setIsRegistering] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [successNotice, setSuccessNotice] = useState<string | null>(null);
 
   // Carregar e-mail salvo ao iniciar
   useEffect(() => {
@@ -25,12 +26,13 @@ const Login: React.FC = () => {
     e.preventDefault();
     setLoading(true);
     setError(null);
+    setSuccessNotice(null);
 
     try {
       if (isRegistering) {
         const { error } = await supabase.auth.signUp({ email, password });
         if (error) throw error;
-        alert('Conta criada! Verifique seu e-mail para confirmar (se habilitado).');
+        setSuccessNotice('Conta criada com sucesso! Verifique seu e-mail para confirmar (se habilitado).');
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
@@ -68,6 +70,13 @@ const Login: React.FC = () => {
             <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-center gap-3 text-red-500 text-sm">
               <AlertCircle className="w-5 h-5 flex-shrink-0" />
               <p>{error}</p>
+            </div>
+          )}
+
+          {successNotice && (
+            <div className="mb-6 p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl flex items-center gap-3 text-emerald-400 text-sm">
+              <CheckCircle2 className="w-5 h-5 flex-shrink-0" />
+              <p>{successNotice}</p>
             </div>
           )}
 

@@ -13,9 +13,10 @@ import {
   DollarSign, CheckCircle2, Clock, Package, FileText, ArrowLeft, 
   TrendingUp, Sparkles, AlertCircle
 } from 'lucide-react';
+import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 
 export const Customers: React.FC = () => {
-  const { customers, orders, parts, filaments, settings, refreshData, user } = useApp();
+  const { customers, setCustomers, orders, parts, filaments, settings, refreshData, user } = useApp();
   const navigate = useNavigate();
 
   // Estados principais
@@ -24,6 +25,9 @@ export const Customers: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Partial<Customer> | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string; ordersCount: number } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [actionNotice, setActionNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   // Cliente selecionado para visualização de Vendas agrupadas
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
@@ -144,20 +148,43 @@ export const Customers: React.FC = () => {
   };
 
   // Excluir cliente
-  const deleteCustomer = async (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    const ordersCount = (customerSalesMap.get(id) || []).length;
-    const confirmMsg = ordersCount > 0 
-      ? `Este cliente possui ${ordersCount} venda(s) registrada(s). Excluir o cliente permanentemente?` 
-      : 'Excluir cliente permanentemente?';
+  const requestDeleteCustomer = (customer: Customer, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const ordersCount = (customerSalesMap.get(customer.id) || []).length;
+    setDeleteTarget({
+      id: customer.id,
+      name: customer.name,
+      ordersCount
+    });
+  };
 
-    if (confirm(confirmMsg)) {
-      const { error } = await supabase.from('customers').delete().eq('id', id);
-      if (error) alert("Erro ao deletar: " + error.message);
-      if (selectedCustomer?.id === id) {
+  const confirmDeleteCustomer = async () => {
+    if (!deleteTarget) return;
+    setIsDeleting(true);
+    const idToDelete = deleteTarget.id;
+
+    try {
+      // Atualização otimista imediata para fluidez máxima
+      setCustomers(customers.filter(c => c.id !== idToDelete));
+      if (selectedCustomer?.id === idToDelete) {
         setSelectedCustomer(null);
       }
-      refreshData();
+      const { error } = await supabase.from('customers').delete().eq('id', idToDelete);
+      if (error) throw error;
+
+      setActionNotice({ type: 'success', message: 'Cliente excluído com sucesso!' });
+      setTimeout(() => setActionNotice(null), 3500);
+      setDeleteTarget(null);
+      await refreshData();
+    } catch (err: any) {
+      console.error('Erro ao excluir cliente:', err);
+      setActionNotice({ 
+        type: 'error', 
+        message: 'Erro ao excluir cliente: ' + (err.message || 'Verifique se não há restrições de integridade no banco de dados.') 
+      });
+      await refreshData();
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -258,6 +285,23 @@ export const Customers: React.FC = () => {
         </button>
       </div>
 
+      {/* Alerta de Feedback de Ações */}
+      {actionNotice && (
+        <div className={`p-3.5 rounded-xl text-xs font-semibold flex items-center justify-between border animate-in fade-in ${
+          actionNotice.type === 'success' 
+            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' 
+            : 'bg-rose-500/10 border-rose-500/30 text-rose-400'
+        }`}>
+          <div className="flex items-center gap-2">
+            {actionNotice.type === 'success' ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
+            <span>{actionNotice.message}</span>
+          </div>
+          <button onClick={() => setActionNotice(null)} className="text-zinc-400 hover:text-white">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* Barra de Busca e Filtros */}
       <div className="flex flex-col sm:flex-row gap-3">
         <div className="relative flex-1">
@@ -357,7 +401,8 @@ export const Customers: React.FC = () => {
                       <Edit2 className="w-4 h-4" />
                     </button>
                     <button 
-                      onClick={(e) => deleteCustomer(customer.id, e)} 
+                      type="button"
+                      onClick={(e) => requestDeleteCustomer(customer, e)} 
                       className="p-2 bg-zinc-800 text-zinc-400 rounded-lg hover:text-red-400 hover:bg-red-500/10 transition-colors"
                       title="Excluir Cliente"
                     >
@@ -520,6 +565,14 @@ export const Customers: React.FC = () => {
                     title="Editar Cadastro"
                   >
                     <Edit2 className="w-4 h-4" />
+                  </button>
+
+                  <button
+                    onClick={() => requestDeleteCustomer(selectedCustomer)}
+                    className="p-2 rounded-xl bg-zinc-800 text-zinc-400 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                    title="Excluir Cliente"
+                  >
+                    <Trash2 className="w-4 h-4" />
                   </button>
 
                   <button
@@ -902,6 +955,22 @@ export const Customers: React.FC = () => {
           onClose={() => setPdfModalOrder(null)}
         />
       )}
+
+      {/* Modal de Confirmação de Exclusão de Cliente */}
+      <ConfirmDeleteModal
+        isOpen={!!deleteTarget}
+        title="Excluir Cliente"
+        itemName={deleteTarget?.name}
+        description={
+          (deleteTarget?.ordersCount || 0) > 0
+            ? `Atenção: Este cliente possui ${deleteTarget?.ordersCount} venda(s) registrada(s) no sistema.\n\nAo excluir este cliente permanentemente, os registros históricos desse cliente serão desvinculados no banco de dados. Deseja prosseguir com a exclusão?`
+            : 'Deseja realmente excluir este cliente permanentemente? Esta ação não pode ser desfeita.'
+        }
+        confirmText="Sim, Excluir Cliente"
+        isLoading={isDeleting}
+        onConfirm={confirmDeleteCustomer}
+        onClose={() => setDeleteTarget(null)}
+      />
 
     </div>
   );

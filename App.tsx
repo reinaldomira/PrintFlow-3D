@@ -11,6 +11,7 @@ import History from './pages/History';
 import Reports from './pages/Reports';
 import Settings from './pages/Settings';
 import Filaments from './pages/Filaments';
+import Supplies from './pages/Supplies';
 import Printers from './pages/Printers';
 import Login from './pages/Login';
 import { Loader2 } from 'lucide-react';
@@ -36,6 +37,7 @@ const AppContent: React.FC = () => {
         <Route path="/" element={<Dashboard />} />
         <Route path="/catalog" element={<Catalog />} />
         <Route path="/filaments" element={<Filaments />} />
+        <Route path="/supplies" element={<Supplies />} />
         <Route path="/printers" element={<Printers />} />
         <Route path="/customers" element={<Customers />} />
         <Route path="/orders" element={<Orders />} />

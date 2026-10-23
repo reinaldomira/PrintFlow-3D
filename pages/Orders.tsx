@@ -11,13 +11,81 @@ import {
   ChevronDown, ChevronUp, Package, Tag, Loader2, CreditCard, Banknote, 
   QrCode, MessageCircle, Printer as PrinterIcon, Edit2, CheckCircle2, UserPlus, 
   Wrench, AlertCircle, FileText, Calculator, TrendingUp, SlidersHorizontal, 
-  AlertTriangle, Percent, DollarSign, Clock, ShieldAlert, Sparkles
+  AlertTriangle, Percent, DollarSign, Clock, ShieldAlert, Sparkles, Check, RotateCcw
 } from 'lucide-react';
 import { QuotePdfModal } from '../components/QuotePdfModal';
 import { PricingCalculatorModal } from '../components/PricingCalculatorModal';
+import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
+
+export interface StockPreviewRow {
+  filamentId: string;
+  name: string;
+  material: string;
+  colorName: string;
+  colorHex: string;
+  currentWeight: number;
+  deltaGrams: number;
+  finalWeight: number;
+  apply: boolean;
+  returnGrams: number;
+  maxReturnGrams: number;
+}
+
+export const calculateOrderFilamentConsumption = (
+  items: OrderItem[],
+  parts: any[],
+  filaments: any[]
+): Record<string, number> => {
+  const deductions: Record<string, number> = {};
+
+  (items || []).forEach(orderItem => {
+    if (!orderItem || !orderItem.partId) return;
+    const qty = Math.max(1, Math.round(Number(orderItem.quantity) || 1));
+    const part = parts.find(p => p.id === orderItem.partId);
+    if (!part) return;
+
+    if (part.recipe && Array.isArray(part.recipe) && part.recipe.length > 0) {
+      part.recipe.forEach((recipeItem: any) => {
+        if (!recipeItem || !recipeItem.filamentId) return;
+        const grams = Math.round((Number(recipeItem.grams) || 0) * qty);
+        if (grams > 0) {
+          deductions[recipeItem.filamentId] = (deductions[recipeItem.filamentId] || 0) + grams;
+        }
+      });
+    } else if (Number(part.weight) > 0 && filaments.length > 0) {
+      const matchedFilament = filaments.find((f: any) => 
+        f.material && part.material && f.material.toLowerCase() === part.material.toLowerCase()
+      ) || filaments[0];
+
+      if (matchedFilament?.id) {
+        const grams = Math.round(Number(part.weight) * qty);
+        if (grams > 0) {
+          deductions[matchedFilament.id] = (deductions[matchedFilament.id] || 0) + grams;
+        }
+      }
+    }
+  });
+
+  return deductions;
+};
+
+export const getOrderConsumedFilaments = (order?: Order | null): Record<string, number> => {
+  if (!order) return {};
+  if (order.consumedFilaments && typeof order.consumedFilaments === 'object') {
+    return order.consumedFilaments;
+  }
+  const rawAny = order as any;
+  if (rawAny.consumed_filaments && typeof rawAny.consumed_filaments === 'object') {
+    return rawAny.consumed_filaments;
+  }
+  if (order.items && order.items.length > 0 && (order.items[0] as any)?._consumedFilaments) {
+    return (order.items[0] as any)._consumedFilaments;
+  }
+  return {};
+};
 
 export const Orders: React.FC = () => {
-  const { orders, refreshData, customers, parts, filaments, printers, settings, user } = useApp();
+  const { orders, setOrders, refreshData, customers, parts, filaments, printers, settings, user } = useApp();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isPricingCalculatorOpen, setIsPricingCalculatorOpen] = useState(false);
   const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
@@ -27,6 +95,33 @@ export const Orders: React.FC = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [pageNotice, setPageNotice] = useState<{ type: 'warning' | 'error' | 'success'; message: string } | null>(null);
+
+  // Estados de confirmação de exclusão e cancelamento sem bloqueio de janela
+  const [deleteOrderTarget, setDeleteOrderTarget] = useState<{
+    id: string;
+    code: string;
+    customerName: string;
+    totalGrams: number;
+  } | null>(null);
+  const [isDeletingOrder, setIsDeletingOrder] = useState(false);
+  const [cancelPromptOrder, setCancelPromptOrder] = useState<Order | null>(null);
+
+  // Modal de Confirmação Cirúrgica de Estoque (Baixa inicial, Delta de edição, Estorno de cancelamento)
+  const [stockModal, setStockModal] = useState<{
+    isOpen: boolean;
+    type: 'create' | 'edit' | 'cancel';
+    title: string;
+    subtitle: string;
+    rows: StockPreviewRow[];
+    orderId?: string;
+    orderCode?: string;
+    pendingOrderData?: {
+      fullPayload: any;
+      basePayload: any;
+      orderIdToUpdate?: string | null;
+    };
+  } | null>(null);
+  const [isProcessingStock, setIsProcessingStock] = useState(false);
 
   // Quick Customer Creation inline
   const [isQuickCustomerOpen, setIsQuickCustomerOpen] = useState(false);
@@ -265,7 +360,7 @@ export const Orders: React.FC = () => {
       setQuickCustomerPhone('');
       setIsQuickCustomerOpen(false);
     } catch (err: any) {
-      alert('Erro ao criar cliente: ' + (err.message || 'Verifique a tabela customers'));
+      setFormError('Erro ao criar cliente: ' + (err.message || 'Verifique a tabela customers'));
     } finally {
       setIsSavingCustomer(false);
     }
@@ -291,80 +386,51 @@ export const Orders: React.FC = () => {
     setIsCustomItemOpen(false);
   };
 
-  const handleSaveOrder = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (isSaving) return;
+  const executeOrderSave = async (
+    fullPayload: any,
+    basePayload: any,
+    orderIdToUpdate: string | null,
+    consumedMap: Record<string, number>,
+    stockStatus: 'none' | 'confirmed' | 'partial' | 'refunded'
+  ) => {
+    setIsSaving(true);
     setFormError(null);
 
-    if (!orderForm.items || orderForm.items.length === 0) {
-      setFormError('Selecione pelo menos uma peça ou adicione um item avulso.');
-      return;
-    }
-
-    if (!user) {
-      setFormError('Sessão de usuário não encontrada. Por favor, recarregue a página.');
-      return;
-    }
-
-    setIsSaving(true);
-
     try {
-      // Validação estrita de UUID para o campo customerId no PostgreSQL
-      const isValidUUID = (str?: string | null) => 
-        Boolean(str && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str));
-
-      const safeCustomerId = isValidUUID(orderForm.customerId) ? orderForm.customerId : null;
-
-      // Sanitiza itens garantindo que a quantidade seja inteira e positiva
-      const sanitizedItems = (orderForm.items || []).map(item => ({
-        ...item,
-        quantity: Math.max(1, Math.round(Number(item.quantity) || 1)),
-        unitPrice: Math.max(0, Number(item.unitPrice) || 0)
-      }));
-
-      // 1. Salvar ou Atualizar pedido no Supabase PRIMEIRO
-      const basePayload: any = {
-        customerId: safeCustomerId,
-        items: sanitizedItems,
-        totalValue: Number(orderTotal) || 0,
-        status: orderForm.status || OrderStatus.QUEUE,
-        user_id: user.id
+      const payloadWithStock = {
+        ...fullPayload,
+        consumedFilaments: consumedMap,
+        stockDeductionStatus: stockStatus,
+        stockUpdatedAt: new Date().toISOString()
       };
 
-      if (!editingOrderId) {
-        basePayload.createdAt = new Date().toISOString();
+      // Backup de redundância: persiste o snapshot também dentro do primeiro item JSONB
+      // garantindo que bancos legados sem a coluna consumedFilaments preservem os dados
+      if (payloadWithStock.items && payloadWithStock.items.length > 0) {
+        payloadWithStock.items[0]._consumedFilaments = consumedMap;
+        payloadWithStock.items[0]._stockStatus = stockStatus;
       }
 
-      // Tentativa 1: Payload completo com todos os novos campos
-      let fullPayload = {
-        ...basePayload,
-        discount: Number(orderForm.discount) || 0,
-        paymentMethod: orderForm.paymentMethod || PaymentMethod.PIX,
-        custosFinanceiros: financialForm,
-        detalhesPrecificacao: pricingBreakdown,
-        payments: [{
-          id: Math.random().toString(36).substring(2, 9),
-          amount: Number(orderTotal) || 0,
-          date: new Date().toISOString(),
-          method: orderForm.paymentMethod || PaymentMethod.PIX
-        }]
-      };
-
       const executeSave = async (dataToSave: any) => {
-        if (editingOrderId) {
-          return await supabase.from('orders').update(dataToSave).eq('id', editingOrderId);
+        if (orderIdToUpdate) {
+          return await supabase.from('orders').update(dataToSave).eq('id', orderIdToUpdate);
         } else {
           return await supabase.from('orders').insert([dataToSave]);
         }
       };
 
-      let saveResult = await executeSave(fullPayload);
+      let saveResult = await executeSave(payloadWithStock);
 
       // Se falhar devido a coluna ausente (PGRST204) no PostgREST cache, aplica fallback dinâmico
       if (saveResult.error && (saveResult.error.code === 'PGRST204' || saveResult.error.message?.includes('column'))) {
         console.warn('Detectada coluna ausente em orders no Supabase, aplicando fallback resiliente:', saveResult.error.message);
-        const retryPayload = { ...fullPayload };
+        const retryPayload = { ...payloadWithStock };
 
+        if (saveResult.error.message?.includes('consumedFilaments') || saveResult.error.message?.includes('consumed_filaments')) {
+          delete retryPayload.consumedFilaments;
+          delete retryPayload.stockDeductionStatus;
+          delete retryPayload.stockUpdatedAt;
+        }
         if (saveResult.error.message?.includes('custosFinanceiros') || saveResult.error.message?.includes('custos_financeiros')) {
           delete retryPayload.custosFinanceiros;
         }
@@ -390,79 +456,420 @@ export const Orders: React.FC = () => {
         }
       }
 
-      // Se o pedido não foi salvo, NÃO prosseguir para a baixa de estoque
       if (saveResult.error) {
         throw new Error(saveResult.error.message || 'Falha ao salvar pedido no Supabase.');
       }
 
-      // 2. Com o pedido CONFIRMADO como salvo, realizar baixa de filamentos APENAS em novos pedidos
-      let filamentWarning: string | null = null;
-
-      if (!editingOrderId) {
-        const filamentDeductions: Record<string, number> = {};
-
-        sanitizedItems.forEach(orderItem => {
-          const part = parts.find(p => p.id === orderItem.partId);
-          if (!part) return;
-
-          if (part.recipe && part.recipe.length > 0) {
-            part.recipe.forEach(recipeItem => {
-              const grams = (recipeItem.grams || 0) * (orderItem.quantity || 1);
-              filamentDeductions[recipeItem.filamentId] = (filamentDeductions[recipeItem.filamentId] || 0) + grams;
-            });
-          } else if (Number(part.weight) > 0 && filaments.length > 0) {
-            const matchedFilament = filaments.find(f => f.material.toLowerCase() === (part.material || 'PLA').toLowerCase()) || filaments[0];
-            if (matchedFilament) {
-              const grams = Number(part.weight) * (orderItem.quantity || 1);
-              filamentDeductions[matchedFilament.id] = (filamentDeductions[matchedFilament.id] || 0) + grams;
-            }
-          }
-        });
-
-        const deductionEntries = Object.entries(filamentDeductions);
-        if (deductionEntries.length > 0) {
-          const updatePromises = deductionEntries.map(async ([filamentId, usedGrams]) => {
-            const current = filaments.find(f => f.id === filamentId);
-            const currentWeight = current?.remainingWeight ?? current?.weight ?? 1000;
-            const newWeight = Math.max(0, currentWeight - usedGrams);
-
-            const { error: updateError } = await supabase
-              .from('filaments')
-              .update({ remainingWeight: newWeight })
-              .eq('id', filamentId);
-
-            return { filamentId, error: updateError };
-          });
-
-          const results = await Promise.all(updatePromises);
-          const failedUpdates = results.filter(r => r.error);
-
-          if (failedUpdates.length > 0) {
-            console.warn('Falha ao atualizar estoque de filamento no Supabase:', failedUpdates);
-            filamentWarning = 'O pedido foi registrado com sucesso! Porém, ocorreu uma falha ao atualizar o estoque de filamento no Supabase. Por favor, confira o estoque na aba Filamentos.';
-          }
-        }
-      }
-
-      // 3. Atualizar dados na memória com o estado real confirmado pelo Supabase
       await refreshData();
-
-      // Fechar modal
       setIsModalOpen(false);
       setEditingOrderId(null);
-
-      // Exibir aviso se houve falha no estoque, ou limpar aviso anterior
-      if (filamentWarning) {
-        setPageNotice({ type: 'warning', message: filamentWarning });
-      } else {
-        setPageNotice(null);
-      }
+      setStockModal(null);
+      setPageNotice({
+        type: 'success',
+        message: orderIdToUpdate 
+          ? 'Pedido atualizado com sucesso!' 
+          : 'Pedido registrado com sucesso!'
+      });
     } catch (err: any) {
-      console.error('Erro salvar pedido:', err);
+      console.error('Erro ao salvar pedido:', err);
       setFormError(err.message || 'Erro ao comunicar com o banco de dados.');
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const handleSaveOrder = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSaving || isProcessingStock) return;
+    setFormError(null);
+
+    if (!orderForm.items || orderForm.items.length === 0) {
+      setFormError('Selecione pelo menos uma peça ou adicione um item avulso.');
+      return;
+    }
+
+    if (!user) {
+      setFormError('Sessão de usuário não encontrada. Por favor, recarregue a página.');
+      return;
+    }
+
+    // Validação estrita de UUID para o campo customerId no PostgreSQL
+    const isValidUUID = (str?: string | null) => 
+      Boolean(str && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str));
+
+    const safeCustomerId = isValidUUID(orderForm.customerId) ? orderForm.customerId : null;
+
+    // Sanitiza itens garantindo que a quantidade seja inteira e positiva
+    const sanitizedItems = (orderForm.items || []).map(item => ({
+      ...item,
+      quantity: Math.max(1, Math.round(Number(item.quantity) || 1)),
+      unitPrice: Math.max(0, Number(item.unitPrice) || 0)
+    }));
+
+    const basePayload: any = {
+      customerId: safeCustomerId,
+      items: sanitizedItems,
+      totalValue: Number(orderTotal) || 0,
+      status: orderForm.status || OrderStatus.QUEUE,
+      user_id: user.id
+    };
+
+    if (!editingOrderId) {
+      basePayload.createdAt = new Date().toISOString();
+    }
+
+    const fullPayload: any = {
+      ...basePayload,
+      discount: Number(orderForm.discount) || 0,
+      paymentMethod: orderForm.paymentMethod || PaymentMethod.PIX,
+      custosFinanceiros: financialForm,
+      detalhesPrecificacao: pricingBreakdown,
+      payments: [{
+        id: Math.random().toString(36).substring(2, 9),
+        amount: Number(orderTotal) || 0,
+        date: new Date().toISOString(),
+        method: orderForm.paymentMethod || PaymentMethod.PIX
+      }]
+    };
+
+    // Calcula o consumo de filamento necessário para este pedido
+    const calculatedConsumption = calculateOrderFilamentConsumption(sanitizedItems, parts, filaments);
+
+    if (!editingOrderId) {
+      // 1. NOVO PEDIDO: Solicitar confirmação antes de efetuar a baixa de filamento (Regra 1 e 4)
+      if (Object.keys(calculatedConsumption).length === 0) {
+        // Sem receitas nem filamentos vinculados (ex: serviço ou item avulso) -> salva direto
+        await executeOrderSave(fullPayload, basePayload, null, {}, 'none');
+        return;
+      }
+
+      const rows: StockPreviewRow[] = Object.entries(calculatedConsumption).map(([fId, grams]) => {
+        const f = filaments.find(item => item.id === fId);
+        const current = f?.remainingWeight ?? f?.weight ?? 1000;
+        return {
+          filamentId: fId,
+          name: f ? `${f.brand} - ${f.material}` : 'Filamento',
+          material: f?.material || 'PLA',
+          colorName: f?.colorName || 'Cor Padrão',
+          colorHex: f?.colorHex || '#3b82f6',
+          currentWeight: current,
+          deltaGrams: grams, // Positivo = baixa
+          finalWeight: current - grams,
+          apply: true,
+          returnGrams: 0,
+          maxReturnGrams: 0
+        };
+      });
+
+      setStockModal({
+        isOpen: true,
+        type: 'create',
+        title: 'Confirmação de Baixa de Filamento',
+        subtitle: 'Confira os carretéis que terão material baixado para a produção deste novo pedido.',
+        rows,
+        pendingOrderData: { fullPayload, basePayload, orderIdToUpdate: null }
+      });
+    } else {
+      // 2. EDIÇÃO DE PEDIDO: Calcular a diferença entre consumo anterior e novo consumo (Regra 2)
+      const existingOrder = orders.find(o => o.id === editingOrderId);
+      const prevConsumption = getOrderConsumedFilaments(existingOrder);
+
+      // Compara prevConsumption vs calculatedConsumption
+      const allFilamentIds = Array.from(new Set([
+        ...Object.keys(prevConsumption),
+        ...Object.keys(calculatedConsumption)
+      ]));
+
+      const changedRows: StockPreviewRow[] = [];
+
+      allFilamentIds.forEach(fId => {
+        const prev = prevConsumption[fId] || 0;
+        const next = calculatedConsumption[fId] || 0;
+        const delta = next - prev;
+
+        if (delta !== 0) {
+          const f = filaments.find(item => item.id === fId);
+          const current = f?.remainingWeight ?? f?.weight ?? 1000;
+          const finalWeight = delta > 0 ? (current - delta) : (current + Math.abs(delta));
+
+          changedRows.push({
+            filamentId: fId,
+            name: f ? `${f.brand} - ${f.material}` : 'Filamento',
+            material: f?.material || 'PLA',
+            colorName: f?.colorName || 'Cor Padrão',
+            colorHex: f?.colorHex || '#3b82f6',
+            currentWeight: current,
+            deltaGrams: delta,
+            finalWeight,
+            apply: true,
+            returnGrams: delta < 0 ? Math.abs(delta) : 0,
+            maxReturnGrams: delta < 0 ? Math.abs(delta) : 0
+          });
+        }
+      });
+
+      if (changedRows.length === 0) {
+        // Nenhuma alteração no consumo de material -> salva direto sem perturbar estoque
+        await executeOrderSave(
+          fullPayload, 
+          basePayload, 
+          editingOrderId, 
+          prevConsumption, 
+          existingOrder?.stockDeductionStatus || 'confirmed'
+        );
+        return;
+      }
+
+      setStockModal({
+        isOpen: true,
+        type: 'edit',
+        title: 'Ajuste de Estoque por Edição de Pedido',
+        subtitle: 'As alterações nas peças modificaram o consumo de filamento. Movimente apenas as diferenças apuradas.',
+        rows: changedRows,
+        orderId: editingOrderId,
+        orderCode: editingOrderId.slice(0, 5).toUpperCase(),
+        pendingOrderData: { fullPayload, basePayload, orderIdToUpdate: editingOrderId }
+      });
+    }
+  };
+
+  const handleConfirmStockMovement = async (approvedRows: StockPreviewRow[], skipStock = false) => {
+    if (isProcessingStock || !stockModal) return;
+    setIsProcessingStock(true);
+
+    try {
+      let warningMsg: string | null = null;
+
+      if (stockModal.type === 'create') {
+        const confirmedConsumed: Record<string, number> = {};
+
+        if (!skipStock) {
+          const updatesToRun = approvedRows.filter(r => r.apply && r.deltaGrams > 0);
+          
+          for (const row of updatesToRun) {
+            const current = filaments.find(f => f.id === row.filamentId);
+            const currentWeight = current?.remainingWeight ?? current?.weight ?? 1000;
+            const newWeight = Math.max(0, currentWeight - row.deltaGrams);
+
+            const { error } = await supabase
+              .from('filaments')
+              .update({ remainingWeight: newWeight })
+              .eq('id', row.filamentId);
+
+            if (error) {
+              console.warn(`Erro ao baixar filamento ${row.filamentId}:`, error);
+              warningMsg = 'Aviso: Houve falha ao atualizar o saldo de um ou mais carretéis.';
+            } else {
+              confirmedConsumed[row.filamentId] = row.deltaGrams;
+            }
+          }
+        }
+
+        const pending = stockModal.pendingOrderData;
+        if (pending) {
+          await executeOrderSave(
+            pending.fullPayload,
+            pending.basePayload,
+            null,
+            confirmedConsumed,
+            skipStock ? 'none' : (Object.keys(confirmedConsumed).length > 0 ? 'confirmed' : 'none')
+          );
+        }
+      } else if (stockModal.type === 'edit') {
+        const existingOrder = orders.find(o => o.id === stockModal.orderId);
+        const prevConsumed = getOrderConsumedFilaments(existingOrder);
+        const newCalculated = calculateOrderFilamentConsumption(
+          stockModal.pendingOrderData?.fullPayload?.items || [],
+          parts,
+          filaments
+        );
+        const finalConsumedMap = { ...newCalculated };
+
+        if (!skipStock) {
+          for (const row of approvedRows) {
+            if (!row.apply) continue;
+            const current = filaments.find(f => f.id === row.filamentId);
+            const currentWeight = current?.remainingWeight ?? current?.weight ?? 1000;
+            
+            let newWeight = currentWeight;
+            if (row.deltaGrams > 0) {
+              // Consumo adicional
+              newWeight = Math.max(0, currentWeight - row.deltaGrams);
+            } else if (row.deltaGrams < 0) {
+              // Estorno de sobra (apenas as gramas autorizadas em returnGrams)
+              const gramsToReturn = Math.min(Math.abs(row.deltaGrams), Math.max(0, row.returnGrams || 0));
+              newWeight = currentWeight + gramsToReturn;
+              if (gramsToReturn < Math.abs(row.deltaGrams)) {
+                finalConsumedMap[row.filamentId] = (prevConsumed[row.filamentId] || 0) - gramsToReturn;
+              }
+            }
+
+            if (newWeight !== currentWeight) {
+              const { error } = await supabase
+                .from('filaments')
+                .update({ remainingWeight: newWeight })
+                .eq('id', row.filamentId);
+
+              if (error) {
+                console.warn(`Erro ao atualizar estoque na edição:`, error);
+                warningMsg = 'Aviso: Houve falha ao movimentar um dos carretéis na edição.';
+              }
+            }
+          }
+        }
+
+        const pending = stockModal.pendingOrderData;
+        if (pending) {
+          await executeOrderSave(
+            pending.fullPayload,
+            pending.basePayload,
+            stockModal.orderId!,
+            skipStock ? prevConsumed : finalConsumedMap,
+            skipStock ? (existingOrder?.stockDeductionStatus || 'none') : 'confirmed'
+          );
+        }
+      } else if (stockModal.type === 'cancel') {
+        const orderToCancel = orders.find(o => o.id === stockModal.orderId);
+        if (!orderToCancel) return;
+
+        const prevConsumed = getOrderConsumedFilaments(orderToCancel);
+        const updatedConsumed = { ...prevConsumed };
+
+        if (!skipStock) {
+          for (const row of approvedRows) {
+            const gramsToReturn = Math.max(0, Math.min(row.maxReturnGrams, Number(row.returnGrams) || 0));
+            if (gramsToReturn > 0) {
+              const current = filaments.find(f => f.id === row.filamentId);
+              const currentWeight = current?.remainingWeight ?? current?.weight ?? 1000;
+              const newWeight = currentWeight + gramsToReturn;
+
+              const { error } = await supabase
+                .from('filaments')
+                .update({ remainingWeight: newWeight })
+                .eq('id', row.filamentId);
+
+              if (error) {
+                console.warn(`Erro ao estornar filamento ${row.filamentId}:`, error);
+                warningMsg = 'Aviso: Não foi possível devolver o material ao carretel no Supabase.';
+              } else {
+                updatedConsumed[row.filamentId] = Math.max(0, (prevConsumed[row.filamentId] || 0) - gramsToReturn);
+              }
+            }
+          }
+        }
+
+        // Atualiza o status do pedido para CANCELLED no Supabase
+        const hasReturnedAnything = approvedRows.some(r => (r.returnGrams || 0) > 0);
+        const updateData: any = {
+          status: OrderStatus.CANCELLED,
+          consumedFilaments: updatedConsumed,
+          stockDeductionStatus: hasReturnedAnything ? 'refunded' : (orderToCancel.stockDeductionStatus || 'none'),
+          stockUpdatedAt: new Date().toISOString()
+        };
+
+        let { error: cancelError } = await supabase
+          .from('orders')
+          .update(updateData)
+          .eq('id', orderToCancel.id);
+
+        if (cancelError && (cancelError.code === 'PGRST204' || cancelError.message?.includes('column'))) {
+          const { error: fallbackErr } = await supabase
+            .from('orders')
+            .update({ status: OrderStatus.CANCELLED })
+            .eq('id', orderToCancel.id);
+          cancelError = fallbackErr;
+        }
+
+        if (cancelError) {
+          throw new Error(cancelError.message || 'Falha ao atualizar status para cancelado.');
+        }
+
+        await refreshData();
+        setStockModal(null);
+        setPageNotice({
+          type: 'success',
+          message: hasReturnedAnything 
+            ? `Pedido #${orderToCancel.id.slice(0, 5).toUpperCase()} cancelado e materiais estornados com sucesso!` 
+            : `Pedido #${orderToCancel.id.slice(0, 5).toUpperCase()} cancelado (estoque mantido sem alterações).`
+        });
+      }
+
+      if (warningMsg) {
+        setPageNotice({ type: 'warning', message: warningMsg });
+      }
+    } catch (err: any) {
+      console.error('Erro na movimentação de estoque:', err);
+      setPageNotice({ type: 'error', message: 'Erro ao processar movimentação: ' + (err.message || 'Falha na conexão') });
+    } finally {
+      setIsProcessingStock(false);
+    }
+  };
+
+  const updateModalRow = (index: number, updates: Partial<StockPreviewRow>) => {
+    if (!stockModal) return;
+    setStockModal(prev => {
+      if (!prev) return null;
+      const nextRows = [...prev.rows];
+      const target = { ...nextRows[index], ...updates };
+
+      // Se mudou returnGrams, recalcula finalWeight
+      if ('returnGrams' in updates) {
+        const validReturn = Math.max(0, Math.min(target.maxReturnGrams, Number(updates.returnGrams) || 0));
+        target.returnGrams = validReturn;
+        target.finalWeight = target.currentWeight + validReturn;
+        target.apply = validReturn > 0;
+      }
+
+      nextRows[index] = target;
+      return { ...prev, rows: nextRows };
+    });
+  };
+
+  const handleCancelOrderRequest = (order: Order) => {
+    const consumed = getOrderConsumedFilaments(order);
+    const consumedEntries = Object.entries(consumed).filter(([_, g]) => g > 0);
+
+    if (consumedEntries.length === 0) {
+      setCancelPromptOrder(order);
+      return;
+    }
+
+    // Prepara linhas para o modal de cancelamento
+    const rows: StockPreviewRow[] = consumedEntries.map(([fId, grams]) => {
+      const f = filaments.find(item => item.id === fId);
+      const current = f?.remainingWeight ?? f?.weight ?? 1000;
+      return {
+        filamentId: fId,
+        name: f ? `${f.brand} - ${f.material}` : 'Filamento',
+        material: f?.material || 'PLA',
+        colorName: f?.colorName || 'Cor Padrão',
+        colorHex: f?.colorHex || '#3b82f6',
+        currentWeight: current,
+        deltaGrams: -grams, // estorno potencial
+        finalWeight: current, // default 0 estorno -> final = current
+        apply: false,
+        returnGrams: 0, // Regra 6: default 0, não devolve automaticamente
+        maxReturnGrams: grams
+      };
+    });
+
+    setStockModal({
+      isOpen: true,
+      type: 'cancel',
+      title: `Cancelar Pedido #${order.id.slice(0, 5).toUpperCase()}`,
+      subtitle: 'Este pedido registrou consumo de filamento. Escolha quanto material não impresso ou recuperado deve voltar aos carretéis.',
+      rows,
+      orderId: order.id,
+      orderCode: order.id.slice(0, 5).toUpperCase()
+    });
+  };
+
+  const handleStatusChangeRequest = (order: Order, newStatus: OrderStatus) => {
+    if (newStatus === OrderStatus.CANCELLED && order.status !== OrderStatus.CANCELLED) {
+      handleCancelOrderRequest(order);
+      return;
+    }
+    updateStatus(order.id, newStatus);
   };
 
   const addCatalogPart = (partId: string) => {
@@ -524,10 +931,43 @@ export const Orders: React.FC = () => {
     refreshData();
   };
 
-  const deleteOrder = async (id: string) => {
-    if (confirm('Excluir este pedido permanentemente?')) {
-      await supabase.from('orders').delete().eq('id', id);
-      refreshData();
+  const requestDeleteOrder = (order: Order, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const consumed = getOrderConsumedFilaments(order);
+    const totalGrams = Object.values(consumed).reduce((s, g) => s + g, 0);
+    const customer = customers.find(c => c.id === order.customerId);
+    const customerName = customer?.name || 'Cliente Balcão';
+
+    setDeleteOrderTarget({
+      id: order.id,
+      code: order.id.slice(0, 5).toUpperCase(),
+      customerName,
+      totalGrams
+    });
+  };
+
+  const confirmDeleteOrder = async () => {
+    if (!deleteOrderTarget) return;
+    setIsDeletingOrder(true);
+    const idToDelete = deleteOrderTarget.id;
+    const code = deleteOrderTarget.code;
+
+    try {
+      // Atualização otimista imediata para feedback responsivo
+      setOrders(orders.filter(o => o.id !== idToDelete));
+      const { error } = await supabase.from('orders').delete().eq('id', idToDelete);
+      if (error) throw error;
+
+      setPageNotice({ type: 'success', message: `Pedido #${code} excluído com sucesso!` });
+      setTimeout(() => setPageNotice(null), 3500);
+      setDeleteOrderTarget(null);
+      await refreshData();
+    } catch (err: any) {
+      console.error('Erro ao excluir pedido:', err);
+      setPageNotice({ type: 'error', message: 'Erro ao excluir pedido: ' + (err.message || 'Falha no banco de dados.') });
+      await refreshData();
+    } finally {
+      setIsDeletingOrder(false);
     }
   };
 
@@ -723,7 +1163,7 @@ export const Orders: React.FC = () => {
                       className={`px-3 py-2 rounded-xl border text-xs font-bold cursor-pointer transition-colors ${getStatusColor(order.status)}`}
                       value={normalizeOrderStatus(order.status)} 
                       onClick={e => e.stopPropagation()}
-                      onChange={e => updateStatus(order.id, e.target.value as OrderStatus)}
+                      onChange={e => handleStatusChangeRequest(order, e.target.value as OrderStatus)}
                     >
                       {STATUS_LIST.map(st => (
                         <option key={st.key} value={st.key} className="bg-zinc-900 text-zinc-100">
@@ -768,9 +1208,10 @@ export const Orders: React.FC = () => {
                       </button>
 
                       <button 
-                        onClick={() => deleteOrder(order.id)} 
+                        type="button"
+                        onClick={(e) => requestDeleteOrder(order, e)} 
                         title="Excluir Pedido"
-                        className="p-2 text-zinc-600 hover:text-red-500 rounded-lg transition-colors"
+                        className="p-2 text-zinc-600 hover:text-red-500 rounded-lg transition-colors hover:bg-red-500/10"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -808,7 +1249,7 @@ export const Orders: React.FC = () => {
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                updateStatus(order.id, st.key);
+                                handleStatusChangeRequest(order, st.key);
                               }}
                               className={`p-2 rounded-xl text-center border transition-all text-xs font-bold flex flex-col items-center gap-1 ${
                                 isCurrent 
@@ -854,6 +1295,27 @@ export const Orders: React.FC = () => {
                         })}
                       </div>
                     </div>
+
+                    {/* Status de Baixa de Estoque do Pedido */}
+                    {(() => {
+                      const consumed = getOrderConsumedFilaments(order);
+                      const totalGrams = Object.values(consumed).reduce((sum, g) => sum + g, 0);
+                      if (totalGrams <= 0) return null;
+
+                      return (
+                        <div className="flex items-center gap-2 text-[10px] text-zinc-400 bg-zinc-900/60 border border-zinc-800 px-3 py-2 rounded-xl flex-wrap">
+                          <Package className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+                          <span>
+                            Estoque consumido: <strong className="text-zinc-200 font-mono">{totalGrams}g</strong> em {Object.keys(consumed).length} {Object.keys(consumed).length === 1 ? 'carretel' : 'carretéis'}.
+                          </span>
+                          {order.status === OrderStatus.CANCELLED && (
+                            <span className="text-amber-400 font-bold ml-auto">
+                              • Pedido Cancelado
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })()}
 
                     {/* Detalhamento Financeiro e Lucro Líquido Real (pricingCalculator) */}
                     {(() => {
@@ -1775,6 +2237,347 @@ export const Orders: React.FC = () => {
           onClose={() => setQuoteModalOrder(null)}
         />
       )}
+
+      {/* MODAL DE CONFIRMAÇÃO CIRÚRGICA DE ESTOQUE (CRIAÇÃO, DELTA E CANCELAMENTO) */}
+      {stockModal && stockModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-zinc-950/85 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-3xl w-full max-w-2xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+            {/* Header */}
+            <div className="p-5 sm:p-6 border-b border-zinc-800 flex items-center justify-between bg-zinc-900 flex-shrink-0">
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-2xl flex items-center justify-center flex-shrink-0 ${
+                  stockModal.type === 'create'
+                    ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-400'
+                    : stockModal.type === 'edit'
+                    ? 'bg-blue-500/15 border border-blue-500/30 text-blue-400'
+                    : 'bg-amber-500/15 border border-amber-500/30 text-amber-400'
+                }`}>
+                  {stockModal.type === 'create' && <Package className="w-5 h-5" />}
+                  {stockModal.type === 'edit' && <Edit2 className="w-5 h-5" />}
+                  {stockModal.type === 'cancel' && <RotateCcw className="w-5 h-5" />}
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-bold text-white flex items-center gap-2">
+                    <span>{stockModal.title}</span>
+                  </h3>
+                  <p className="text-xs text-zinc-400 mt-0.5">
+                    {stockModal.subtitle}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={isProcessingStock}
+                onClick={() => setStockModal(null)}
+                className="w-9 h-9 bg-zinc-800 hover:bg-zinc-700 rounded-full flex items-center justify-center text-zinc-400 hover:text-white transition disabled:opacity-50"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-5 sm:p-6 space-y-4 overflow-y-auto custom-scrollbar flex-1">
+              {/* Banner Explicativo */}
+              {stockModal.type === 'create' && (
+                <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-start gap-2.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <strong className="block font-bold">Confirmação Prévia de Baixa de Material:</strong>
+                    <span>
+                      Ao confirmar, a quantidade calculada será debitada do saldo dos carretéis cadastrados. Se desejar salvar a encomenda sem mexer no estoque agora, clique em <strong>"Salvar sem Baixar"</strong>.
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {stockModal.type === 'edit' && (
+                <div className="p-3.5 rounded-2xl bg-blue-500/10 border border-blue-500/30 text-blue-300 text-xs flex items-start gap-2.5">
+                  <SlidersHorizontal className="w-4 h-4 text-blue-400 flex-shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <strong className="block font-bold">Movimentação Cirúrgica de Diferença (Delta):</strong>
+                    <span>
+                      Apenas a diferença entre o consumo anterior e o novo consumo será movimentada (+ para consumo adicional, - para sobra que pode voltar ao carretel).
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {stockModal.type === 'cancel' && (
+                <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-start gap-2.5">
+                  <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <strong className="block font-bold">Regra de Oficina 3D (Anti-desperdício):</strong>
+                    <span>
+                      O estoque <strong>NÃO é devolvido automaticamente</strong>. Devolva apenas material de peças que <strong>realmente NÃO foram impressas</strong> ou que possam ser reaproveitadas. Peças já prontas, danificadas ou perdas não devem ser devolvidas ao carretel.
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* Lista de Filamentos */}
+              <div className="space-y-2.5">
+                <label className="text-[10px] font-black uppercase text-zinc-400 tracking-wider block">
+                  Carretéis Vinculados ({stockModal.rows.length})
+                </label>
+
+                {stockModal.rows.map((row, idx) => {
+                  const isNegative = row.finalWeight < 0;
+                  const isLow = row.finalWeight >= 0 && row.finalWeight < 100;
+
+                  return (
+                    <div 
+                      key={row.filamentId}
+                      className={`p-3.5 rounded-2xl border transition-all ${
+                        row.apply 
+                          ? 'bg-zinc-950 border-zinc-700/80' 
+                          : 'bg-zinc-950/40 border-zinc-800/60 opacity-60'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        {/* Filamento */}
+                        <div className="flex items-center gap-2.5 min-w-[180px]">
+                          <div 
+                            className="w-4 h-4 rounded-full border border-zinc-700 flex-shrink-0" 
+                            style={{ backgroundColor: row.colorHex }}
+                            title={row.colorName}
+                          />
+                          <div>
+                            <p className="text-xs font-bold text-white flex items-center gap-1.5">
+                              <span>{row.name}</span>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-zinc-800 text-zinc-400 font-normal">
+                                {row.colorName}
+                              </span>
+                            </p>
+                            <p className="text-[10px] text-zinc-400">
+                              Saldo Atual em Carretel: <strong className="text-zinc-200 font-mono">{row.currentWeight}g</strong>
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Modo Criação */}
+                        {stockModal.type === 'create' && (
+                          <div className="flex items-center gap-3">
+                            <div className="text-right">
+                              <span className="text-xs font-mono font-black text-red-400 block">
+                                - {row.deltaGrams}g
+                              </span>
+                              <span className={`text-[10px] font-mono font-bold ${
+                                isNegative ? 'text-red-400' : isLow ? 'text-amber-400' : 'text-emerald-400'
+                              }`}>
+                                Previsto: {row.finalWeight}g
+                              </span>
+                            </div>
+                            <label className="flex items-center gap-1.5 cursor-pointer text-xs font-bold text-zinc-300">
+                              <input
+                                type="checkbox"
+                                checked={row.apply}
+                                onChange={e => updateModalRow(idx, { apply: e.target.checked })}
+                                className="w-4 h-4 rounded border-zinc-700 bg-zinc-800 text-emerald-500 focus:ring-0 cursor-pointer"
+                              />
+                              <span className="hidden sm:inline">Baixar</span>
+                            </label>
+                          </div>
+                        )}
+
+                        {/* Modo Edição */}
+                        {stockModal.type === 'edit' && (
+                          <div className="flex items-center gap-3">
+                            <div className="text-right">
+                              {row.deltaGrams > 0 ? (
+                                <>
+                                  <span className="text-xs font-mono font-black text-red-400 block">
+                                    + {row.deltaGrams}g (adicional)
+                                  </span>
+                                  <span className="text-[10px] font-mono text-zinc-400">
+                                    Previsto: <strong className="text-emerald-400">{row.finalWeight}g</strong>
+                                  </span>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="text-xs font-mono font-black text-emerald-400 block">
+                                    - {Math.abs(row.deltaGrams)}g (sobra)
+                                  </span>
+                                  <span className="text-[10px] font-mono text-zinc-400">
+                                    Estornar: <strong className="text-emerald-300">{row.returnGrams}g</strong>
+                                  </span>
+                                </>
+                              )}
+                            </div>
+                            <label className="flex items-center gap-1.5 cursor-pointer text-xs font-bold text-zinc-300">
+                              <input
+                                type="checkbox"
+                                checked={row.apply}
+                                onChange={e => updateModalRow(idx, { apply: e.target.checked })}
+                                className="w-4 h-4 rounded border-zinc-700 bg-zinc-800 text-emerald-500 focus:ring-0 cursor-pointer"
+                              />
+                              <span className="hidden sm:inline">Ajustar</span>
+                            </label>
+                          </div>
+                        )}
+
+                        {/* Modo Cancelamento */}
+                        {stockModal.type === 'cancel' && (
+                          <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap">
+                            <div className="text-right">
+                              <span className="text-[10px] text-zinc-400 block">
+                                Baixado no Pedido: <strong className="text-zinc-200 font-mono">{row.maxReturnGrams}g</strong>
+                              </span>
+                              <span className="text-[10px] font-mono font-bold text-emerald-400">
+                                Saldo Previsto: {row.finalWeight}g
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-700/80 rounded-xl p-1">
+                              <input
+                                type="number"
+                                min="0"
+                                max={row.maxReturnGrams}
+                                value={row.returnGrams}
+                                onChange={e => updateModalRow(idx, { returnGrams: Number(e.target.value) || 0 })}
+                                className="w-16 bg-zinc-800 text-center text-xs font-mono font-bold rounded-lg py-1 px-1 text-white outline-none focus:ring-1 focus:ring-emerald-500"
+                              />
+                              <span className="text-[10px] text-zinc-400 font-bold pr-1">g</span>
+                              <button
+                                type="button"
+                                onClick={() => updateModalRow(idx, { returnGrams: row.maxReturnGrams })}
+                                className="text-[10px] px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-emerald-400 font-bold transition"
+                                title="Devolver toda a quantidade baixada ao carretel"
+                              >
+                                Tudo
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => updateModalRow(idx, { returnGrams: 0 })}
+                                className="text-[10px] px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 font-bold transition"
+                                title="Não devolver nada (material consumido ou descartado)"
+                              >
+                                0g
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Alerta de Saldo Negativo se houver */}
+                      {isNegative && (
+                        <p className="text-[10px] text-red-400 font-bold mt-2 flex items-center gap-1">
+                          <AlertCircle className="w-3.5 h-3.5" />
+                          Atenção: O saldo físico deste carretel ficará negativo ({row.finalWeight}g). Confirme a pesagem do carretel na oficina.
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Footer com Ações */}
+            <div className="p-5 sm:p-6 border-t border-zinc-800 bg-zinc-900/90 flex flex-col sm:flex-row items-center justify-between gap-3 flex-shrink-0">
+              <button
+                type="button"
+                disabled={isProcessingStock}
+                onClick={() => setStockModal(null)}
+                className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold text-xs transition disabled:opacity-50 order-3 sm:order-1"
+              >
+                {stockModal.type === 'cancel' ? 'Voltar (Manter Pedido)' : 'Voltar ao Pedido'}
+              </button>
+
+              <div className="w-full sm:w-auto flex flex-col sm:flex-row items-center gap-2 order-1 sm:order-2">
+                {stockModal.type === 'create' && (
+                  <button
+                    type="button"
+                    disabled={isProcessingStock}
+                    onClick={() => handleConfirmStockMovement(stockModal.rows, true)}
+                    className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-zinc-700 hover:bg-zinc-800 text-zinc-300 font-bold text-xs transition disabled:opacity-50"
+                  >
+                    Salvar sem Baixar Estoque
+                  </button>
+                )}
+
+                {stockModal.type === 'edit' && (
+                  <button
+                    type="button"
+                    disabled={isProcessingStock}
+                    onClick={() => handleConfirmStockMovement(stockModal.rows, true)}
+                    className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-zinc-700 hover:bg-zinc-800 text-zinc-300 font-bold text-xs transition disabled:opacity-50"
+                  >
+                    Salvar sem Alterar Estoque
+                  </button>
+                )}
+
+                {stockModal.type === 'cancel' && (
+                  <button
+                    type="button"
+                    disabled={isProcessingStock}
+                    onClick={() => handleConfirmStockMovement(stockModal.rows, true)}
+                    className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-amber-500/40 hover:bg-amber-500/10 text-amber-300 font-bold text-xs transition disabled:opacity-50"
+                  >
+                    Apenas Cancelar (Sem Devolver Material)
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  disabled={isProcessingStock}
+                  onClick={() => handleConfirmStockMovement(stockModal.rows, false)}
+                  className={`w-full sm:w-auto px-5 py-2.5 rounded-xl font-black text-xs transition shadow-lg flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer ${
+                    stockModal.type === 'cancel'
+                      ? 'bg-amber-500 hover:bg-amber-400 text-zinc-950 shadow-amber-500/20'
+                      : 'bg-emerald-500 hover:bg-emerald-400 text-zinc-950 shadow-emerald-500/20'
+                  }`}
+                >
+                  {isProcessingStock ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Check className="w-4 h-4" />
+                  )}
+                  <span>
+                    {stockModal.type === 'create' && 'Confirmar e Baixar Estoque'}
+                    {stockModal.type === 'edit' && 'Aplicar Diferenças e Salvar'}
+                    {stockModal.type === 'cancel' && 'Confirmar Cancelamento e Estorno'}
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Confirmação de Exclusão de Pedido */}
+      <ConfirmDeleteModal
+        isOpen={!!deleteOrderTarget}
+        title="Excluir Pedido"
+        itemName={deleteOrderTarget ? `Pedido #${deleteOrderTarget.code} (${deleteOrderTarget.customerName})` : ''}
+        description={
+          deleteOrderTarget && deleteOrderTarget.totalGrams > 0
+            ? `Atenção: Este pedido registrou ${deleteOrderTarget.totalGrams}g de filamento consumido nos carretéis.\n\nA exclusão removerá permanentemente o pedido e seu histórico de vendas do banco de dados. Deseja prosseguir?`
+            : 'Tem certeza de que deseja excluir este pedido permanentemente do sistema? Esta ação não pode ser desfeita.'
+        }
+        confirmText="Sim, Excluir Pedido"
+        isLoading={isDeletingOrder}
+        onConfirm={confirmDeleteOrder}
+        onClose={() => !isDeletingOrder && setDeleteOrderTarget(null)}
+      />
+
+      {/* Modal de Confirmação de Cancelamento de Pedido sem Consumo */}
+      <ConfirmDeleteModal
+        isOpen={!!cancelPromptOrder}
+        title="Cancelar Pedido"
+        itemName={cancelPromptOrder ? `Pedido #${cancelPromptOrder.id.slice(0, 5).toUpperCase()}` : ''}
+        description="Deseja realmente cancelar este pedido? O status será alterado para Cancelado."
+        confirmText="Sim, Cancelar Pedido"
+        isDestructive={false}
+        onConfirm={async () => {
+          if (!cancelPromptOrder) return;
+          const orderId = cancelPromptOrder.id;
+          const code = orderId.slice(0, 5).toUpperCase();
+          setCancelPromptOrder(null);
+          await updateStatus(orderId, OrderStatus.CANCELLED);
+          setPageNotice({ type: 'success', message: `Pedido #${code} cancelado com sucesso.` });
+          setTimeout(() => setPageNotice(null), 3500);
+        }}
+        onClose={() => setCancelPromptOrder(null)}
+      />
     </div>
   );
 };

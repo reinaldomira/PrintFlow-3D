@@ -703,66 +703,74 @@ BEGIN
     v_new_version := COALESCE(v_current_version, 0) + 1;
   END IF;
 
-  -- 2.8 PERSISTÊNCIA ATÔMICA
-  INSERT INTO public.settings (
-    user_id,
-    default_energy_cost,
-    default_filament_cost,
-    default_profit_margin,
-    hourly_labor_rate,
-    hourly_maintenance_cost,
-    currency,
-    filament_brands,
-    categories,
-    business_info,
-    default_packaging_cost,
-    default_other_costs,
-    default_payment_fee_percent,
-    default_marketplace_fee_percent,
-    default_tax_percent,
-    auto_refresh_orders,
-    version,
-    updated_at
-  )
-  VALUES (
-    v_user_id,
-    (p_settings->>'default_energy_cost')::numeric,
-    (p_settings->>'default_filament_cost')::numeric,
-    (p_settings->>'default_profit_margin')::numeric,
-    (p_settings->>'hourly_labor_rate')::numeric,
-    (p_settings->>'hourly_maintenance_cost')::numeric,
-    trim(p_settings->>'currency'),
-    ARRAY(SELECT jsonb_array_elements_text(COALESCE(p_settings->'filament_brands', '[]'::jsonb))),
-    ARRAY(SELECT jsonb_array_elements_text(COALESCE(p_settings->'categories', '[]'::jsonb))),
-    COALESCE(p_settings->'business_info', '{}'::jsonb),
-    (p_settings->>'default_packaging_cost')::numeric,
-    (p_settings->>'default_other_costs')::numeric,
-    (p_settings->>'default_payment_fee_percent')::numeric,
-    (p_settings->>'default_marketplace_fee_percent')::numeric,
-    (p_settings->>'default_tax_percent')::numeric,
-    (p_settings->>'auto_refresh_orders')::boolean,
-    v_new_version,
-    clock_timestamp()
-  )
-  ON CONFLICT (user_id) DO UPDATE SET
-    default_energy_cost = CASE WHEN p_settings ? 'default_energy_cost' THEN (p_settings->>'default_energy_cost')::numeric ELSE settings.default_energy_cost END,
-    default_filament_cost = CASE WHEN p_settings ? 'default_filament_cost' THEN (p_settings->>'default_filament_cost')::numeric ELSE settings.default_filament_cost END,
-    default_profit_margin = CASE WHEN p_settings ? 'default_profit_margin' THEN (p_settings->>'default_profit_margin')::numeric ELSE settings.default_profit_margin END,
-    hourly_labor_rate = CASE WHEN p_settings ? 'hourly_labor_rate' THEN (p_settings->>'hourly_labor_rate')::numeric ELSE settings.hourly_labor_rate END,
-    hourly_maintenance_cost = CASE WHEN p_settings ? 'hourly_maintenance_cost' THEN (p_settings->>'hourly_maintenance_cost')::numeric ELSE settings.hourly_maintenance_cost END,
-    currency = CASE WHEN p_settings ? 'currency' THEN trim(p_settings->>'currency') ELSE settings.currency END,
-    filament_brands = CASE WHEN p_settings ? 'filament_brands' THEN ARRAY(SELECT jsonb_array_elements_text(p_settings->'filament_brands')) ELSE settings.filament_brands END,
-    categories = CASE WHEN p_settings ? 'categories' THEN ARRAY(SELECT jsonb_array_elements_text(p_settings->'categories')) ELSE settings.categories END,
-    business_info = CASE WHEN p_settings ? 'business_info' THEN p_settings->'business_info' ELSE settings.business_info END,
-    default_packaging_cost = CASE WHEN p_settings ? 'default_packaging_cost' THEN (p_settings->>'default_packaging_cost')::numeric ELSE settings.default_packaging_cost END,
-    default_other_costs = CASE WHEN p_settings ? 'default_other_costs' THEN (p_settings->>'default_other_costs')::numeric ELSE settings.default_other_costs END,
-    default_payment_fee_percent = CASE WHEN p_settings ? 'default_payment_fee_percent' THEN (p_settings->>'default_payment_fee_percent')::numeric ELSE settings.default_payment_fee_percent END,
-    default_marketplace_fee_percent = CASE WHEN p_settings ? 'default_marketplace_fee_percent' THEN (p_settings->>'default_marketplace_fee_percent')::numeric ELSE settings.default_marketplace_fee_percent END,
-    default_tax_percent = CASE WHEN p_settings ? 'default_tax_percent' THEN (p_settings->>'default_tax_percent')::numeric ELSE settings.default_tax_percent END,
-    auto_refresh_orders = CASE WHEN p_settings ? 'auto_refresh_orders' THEN (p_settings->>'auto_refresh_orders')::boolean ELSE settings.auto_refresh_orders END,
-    version = v_new_version,
-    updated_at = clock_timestamp()
-  RETURNING * INTO v_row;
+  -- 2.8 PERSISTÊNCIA ATÔMICA ESTRITAMENTE SEPARADA
+  IF NOT v_exists THEN
+    -- A. Criação Inicial: todos os 15 campos obrigatórios foram validados em 2.5A
+    INSERT INTO public.settings (
+      user_id,
+      default_energy_cost,
+      default_filament_cost,
+      default_profit_margin,
+      hourly_labor_rate,
+      hourly_maintenance_cost,
+      currency,
+      filament_brands,
+      categories,
+      business_info,
+      default_packaging_cost,
+      default_other_costs,
+      default_payment_fee_percent,
+      default_marketplace_fee_percent,
+      default_tax_percent,
+      auto_refresh_orders,
+      version,
+      updated_at
+    )
+    VALUES (
+      v_user_id,
+      (p_settings->>'default_energy_cost')::numeric,
+      (p_settings->>'default_filament_cost')::numeric,
+      (p_settings->>'default_profit_margin')::numeric,
+      (p_settings->>'hourly_labor_rate')::numeric,
+      (p_settings->>'hourly_maintenance_cost')::numeric,
+      trim(p_settings->>'currency'),
+      ARRAY(SELECT jsonb_array_elements_text(p_settings->'filament_brands')),
+      ARRAY(SELECT jsonb_array_elements_text(p_settings->'categories')),
+      p_settings->'business_info',
+      (p_settings->>'default_packaging_cost')::numeric,
+      (p_settings->>'default_other_costs')::numeric,
+      (p_settings->>'default_payment_fee_percent')::numeric,
+      (p_settings->>'default_marketplace_fee_percent')::numeric,
+      (p_settings->>'default_tax_percent')::numeric,
+      (p_settings->>'auto_refresh_orders')::boolean,
+      v_new_version,
+      clock_timestamp()
+    )
+    RETURNING * INTO v_row;
+  ELSE
+    -- B. Atualização Parcial: altera exclusivamente as chaves enviadas em p_settings,
+    -- preservando os valores remotos atuais sem jamais avaliar campos omitidos em cláusula VALUES
+    UPDATE public.settings SET
+      default_energy_cost = CASE WHEN p_settings ? 'default_energy_cost' THEN (p_settings->>'default_energy_cost')::numeric ELSE settings.default_energy_cost END,
+      default_filament_cost = CASE WHEN p_settings ? 'default_filament_cost' THEN (p_settings->>'default_filament_cost')::numeric ELSE settings.default_filament_cost END,
+      default_profit_margin = CASE WHEN p_settings ? 'default_profit_margin' THEN (p_settings->>'default_profit_margin')::numeric ELSE settings.default_profit_margin END,
+      hourly_labor_rate = CASE WHEN p_settings ? 'hourly_labor_rate' THEN (p_settings->>'hourly_labor_rate')::numeric ELSE settings.hourly_labor_rate END,
+      hourly_maintenance_cost = CASE WHEN p_settings ? 'hourly_maintenance_cost' THEN (p_settings->>'hourly_maintenance_cost')::numeric ELSE settings.hourly_maintenance_cost END,
+      currency = CASE WHEN p_settings ? 'currency' THEN trim(p_settings->>'currency') ELSE settings.currency END,
+      filament_brands = CASE WHEN p_settings ? 'filament_brands' THEN ARRAY(SELECT jsonb_array_elements_text(p_settings->'filament_brands')) ELSE settings.filament_brands END,
+      categories = CASE WHEN p_settings ? 'categories' THEN ARRAY(SELECT jsonb_array_elements_text(p_settings->'categories')) ELSE settings.categories END,
+      business_info = CASE WHEN p_settings ? 'business_info' THEN p_settings->'business_info' ELSE settings.business_info END,
+      default_packaging_cost = CASE WHEN p_settings ? 'default_packaging_cost' THEN (p_settings->>'default_packaging_cost')::numeric ELSE settings.default_packaging_cost END,
+      default_other_costs = CASE WHEN p_settings ? 'default_other_costs' THEN (p_settings->>'default_other_costs')::numeric ELSE settings.default_other_costs END,
+      default_payment_fee_percent = CASE WHEN p_settings ? 'default_payment_fee_percent' THEN (p_settings->>'default_payment_fee_percent')::numeric ELSE settings.default_payment_fee_percent END,
+      default_marketplace_fee_percent = CASE WHEN p_settings ? 'default_marketplace_fee_percent' THEN (p_settings->>'default_marketplace_fee_percent')::numeric ELSE settings.default_marketplace_fee_percent END,
+      default_tax_percent = CASE WHEN p_settings ? 'default_tax_percent' THEN (p_settings->>'default_tax_percent')::numeric ELSE settings.default_tax_percent END,
+      auto_refresh_orders = CASE WHEN p_settings ? 'auto_refresh_orders' THEN (p_settings->>'auto_refresh_orders')::boolean ELSE settings.auto_refresh_orders END,
+      version = v_new_version,
+      updated_at = clock_timestamp()
+    WHERE user_id = v_user_id
+    RETURNING * INTO v_row;
+  END IF;
 
   RETURN jsonb_build_object(
     'success', true,
@@ -958,7 +966,26 @@ CREATE TABLE IF NOT EXISTS public.customers (
     created_at timestamptz DEFAULT now()
 );
 
--- GARANTIA DE COLUNAS ADICIONAIS NA TABELA SETTINGS
+-- 7. TABELA INSUMOS & COMPONENTES (Argolas, Ímãs, Botões, Parafusos, Embalagens)
+CREATE TABLE IF NOT EXISTS public.supplies (
+    id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id uuid REFERENCES auth.users(id),
+    name text NOT NULL,
+    category text DEFAULT 'Outros',
+    quantity numeric DEFAULT 0,
+    min_quantity numeric DEFAULT 10,
+    unit_cost numeric DEFAULT 0,
+    package_price numeric DEFAULT 0,
+    package_units numeric DEFAULT 1,
+    supplier text,
+    link text,
+    notes text,
+    created_at timestamptz DEFAULT now(),
+    updated_at timestamptz DEFAULT now()
+);
+
+-- GARANTIA DE COLUNAS ADICIONAIS NA TABELA SETTINGS E PARTS
+ALTER TABLE public.parts ADD COLUMN IF NOT EXISTS supplies jsonb DEFAULT '[]'::jsonb;
 ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_labor_rate numeric DEFAULT 25.00;
 ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS hourly_maintenance_cost numeric DEFAULT 1.50;
 ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS business_info jsonb DEFAULT '{}'::jsonb;
@@ -1007,7 +1034,7 @@ ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFA
     const file = e.target.files?.[0];
     if (!file || !user) return;
     if (file.size > 5 * 1024 * 1024) {
-      alert('A imagem do logotipo deve ter no máximo 5MB.');
+      setLogoNotice('A imagem do logotipo deve ter no máximo 5MB.');
       return;
     }
     try {
@@ -1024,7 +1051,8 @@ ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFA
       await saveBusinessData(updated);
     } catch (err: any) {
       console.error('Erro ao processar logotipo:', err);
-      alert('Erro ao carregar logotipo: ' + (err.message || 'Falha de processamento'));
+      setLogoNotice('Erro ao carregar logotipo: ' + (err.message || 'Falha de processamento'));
+      setSaveStatus('error');
     }
   };
 
