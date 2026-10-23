@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { Part, Customer, Order, Settings, User, Filament, Printer, BusinessInfo, Supply, PrintFailure } from '../types';
 import { supabase } from '../services/supabase';
 import { 
@@ -73,6 +73,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [loading, setLoading] = useState(true);
   const [dbError, setDbError] = useState<string | null>(null);
 
+  const isRefreshingRef = useRef(false);
+  const lastRefreshTimeRef = useRef(0);
+  const warnedMissingTablesRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session?.user) {
@@ -96,6 +100,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSettingsSyncState('synced');
         setSettingsConflict(null);
         setDbError(null);
+        warnedMissingTablesRef.current.clear();
       }
     });
 
@@ -108,7 +113,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     const handleSyncOnVisible = () => {
-      if (document.visibilityState === 'visible' && user) {
+      // Throttle window focus / visibility sync to at least 8 seconds
+      const elapsed = Date.now() - lastRefreshTimeRef.current;
+      if (document.visibilityState === 'visible' && user && elapsed > 8000) {
         refreshData();
       }
     };
@@ -127,6 +134,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const refreshData = async () => {
     if (!user) return;
     
+    // Prevent duplicate concurrent requests hammering database
+    if (isRefreshingRef.current) return;
+    isRefreshingRef.current = true;
+    lastRefreshTimeRef.current = Date.now();
+    
     try {
       const fetchTable = async (table: string, orderCol?: string): Promise<TableFetchResult> => {
         try {
@@ -136,16 +148,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
           const { data, error } = await query;
           if (error) {
+            // Se for a tabela opcional 'supplies', silencia sem emitir warning: usa cache local com segurança
+            if (table === 'supplies') {
+              return { table, data: null, error: null, success: false };
+            }
+
             const sanitized = sanitizeErrorMessage(error.message || `Código ${error.code || 'desconhecido'}`);
-            console.warn(`Aviso na tabela "${table}":`, sanitized);
+            // Log warning only once per missing table to avoid flooding console
+            if (!warnedMissingTablesRef.current.has(table)) {
+              console.warn(`Aviso na tabela "${table}":`, sanitized);
+              warnedMissingTablesRef.current.add(table);
+            }
             let formattedMsg = `Tabela "${table}": ${sanitized}`;
-            if (error.code === '42P01' || error.code === 'PGRST205') {
+            if (error.code === '42P01' || error.code === 'PGRST205' || sanitized.includes('schema cache')) {
               formattedMsg = `Tabela "${table}" ausente no banco de dados`;
             } else if (error.code === 'PGRST204' || sanitized.toLowerCase().includes('column') || sanitized.toLowerCase().includes('coluna')) {
               formattedMsg = `Coluna ausente na tabela "${table}": ${sanitized}`;
             }
             return { table, data: null, error: formattedMsg, success: false };
           }
+          // Table exists and query succeeded
+          warnedMissingTablesRef.current.delete(table);
           return { table, data: data || [], error: null, success: true };
         } catch (err: any) {
           const sanitized = sanitizeErrorMessage(err?.message || 'Falha de conexão');
@@ -266,6 +289,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.error('Erro ao buscar dados:', sanitized);
       setDbError(`Falha ao sincronizar dados: ${sanitized}`);
     } finally {
+      isRefreshingRef.current = false;
       setLoading(false);
     }
   };

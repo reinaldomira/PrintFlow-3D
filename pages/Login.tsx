@@ -55,11 +55,17 @@ const Login: React.FC = () => {
     <div className="min-h-screen flex items-center justify-center p-6 bg-zinc-950">
       <div className="w-full max-w-md space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
         <div className="text-center">
-          <div className="w-20 h-20 bg-emerald-500 rounded-[2rem] flex items-center justify-center mx-auto mb-6 shadow-xl shadow-emerald-500/20">
-            <span className="text-zinc-950 font-black text-3xl">PF</span>
+          <div className="w-24 h-24 rounded-3xl overflow-hidden mx-auto mb-4 border-2 border-cyan-400/60 shadow-2xl shadow-cyan-500/25 bg-[#09090b]">
+            <img 
+              src="/logo.png" 
+              alt="PrintFlow 3D" 
+              className="w-full h-full object-cover"
+            />
           </div>
-          <h1 className="text-4xl font-black tracking-tighter mb-2">PrintFlow</h1>
-          <p className="text-zinc-500 font-medium italic">Sua produção na Nuvem</p>
+          <h1 className="text-4xl font-black tracking-tight mb-1 text-white">
+            PrintFlow <span className="text-cyan-400 font-mono">3D</span>
+          </h1>
+          <p className="text-slate-400 text-sm font-medium">Sua oficina de impressão 3D na Nuvem</p>
         </div>
 
         <div className="bg-zinc-900 border border-zinc-800 rounded-[2.5rem] p-8 shadow-2xl relative overflow-hidden">

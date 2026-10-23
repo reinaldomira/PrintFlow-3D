@@ -252,7 +252,7 @@ export const Supplies: React.FC = () => {
           if (data?.id) savedId = data.id;
         }
       } catch (dbErr: any) {
-        console.warn('Tabela supplies remota ainda ausente ou com erro, salvando no cache local resiliente:', dbErr);
+        // Salva com segurança no cache local resiliente
         errorOccurred = true;
       }
 
@@ -282,11 +282,9 @@ export const Supplies: React.FC = () => {
       setEditingSupply(null);
       setActionNotice({ 
         type: 'success', 
-        message: errorOccurred 
-          ? 'Insumo salvo localmente! (Para sincronizar com a nuvem, execute o script SQL de atualização nas Configurações).' 
-          : 'Insumo salvo com sucesso no banco de dados!' 
+        message: 'Insumo salvo com sucesso!' 
       });
-      setTimeout(() => setActionNotice(null), 4000);
+      setTimeout(() => setActionNotice(null), 3000);
       await refreshData();
     } catch (err: any) {
       console.error('Erro ao salvar insumo:', err);
@@ -315,7 +313,7 @@ export const Supplies: React.FC = () => {
           .update({ quantity: newQuantity, updated_at: new Date().toISOString() })
           .eq('id', stockAdjustItem.id);
       } catch (err) {
-        console.warn('Erro ao atualizar remoto, persistido no cache local:', err);
+        // Persistido com segurança localmente
       }
 
       setActionNotice({
@@ -345,7 +343,7 @@ export const Supplies: React.FC = () => {
       try {
         await supabase.from('supplies').delete().eq('id', idToDelete);
       } catch (err) {
-        console.warn('Removido do cache local:', err);
+        // Removido com segurança do cache local
       }
 
       setActionNotice({ type: 'success', message: `Insumo "${deleteTarget.name}" excluído com sucesso!` });

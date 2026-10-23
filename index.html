@@ -14,12 +14,17 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="PrintFlow">
-    <meta name="theme-color" content="#10b981">
+    <meta name="theme-color" content="#09090b">
     
     <link rel="manifest" href="/manifest.json">
-    <link rel="icon" type="image/svg+xml" href="/icon.svg">
     <link rel="icon" type="image/x-icon" href="/favicon.ico">
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="64x64" href="/icons/neon-favicon.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/neon-logo-192.png">
+    <link rel="icon" type="image/png" sizes="512x512" href="/icons/neon-logo-512.png">
+    <link rel="apple-touch-icon" href="/icons/neon-touch-icon.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/neon-touch-icon.png">
+    <link rel="apple-touch-icon" sizes="192x192" href="/icons/neon-logo-192.png">
+    <link rel="apple-touch-icon" sizes="512x512" href="/icons/neon-logo-512.png">
 
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -94,13 +99,17 @@
             .then((registration) => {
               console.log('PrintFlow ServiceWorker registrado com sucesso:', registration.scope);
               
+              // Force check for updates immediately
+              registration.update();
+
               // Listen for updates found
               registration.addEventListener('updatefound', () => {
                 const newWorker = registration.installing;
                 if (newWorker) {
                   newWorker.addEventListener('statechange', () => {
-                    if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-                      console.log('Nova versão do PrintFlow disponível!');
+                    if (newWorker.state === 'installed') {
+                      newWorker.postMessage({ type: 'SKIP_WAITING' });
+                      console.log('Nova versão do PrintFlow instalada e ativada!');
                     }
                   });
                 }

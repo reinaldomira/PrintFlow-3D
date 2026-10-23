@@ -1,27 +1,43 @@
-const CACHE_NAME = 'printflow-pwa-v2';
+const CACHE_NAME = 'printflow-pwa-v8';
 
 const PRECACHE_ASSETS = [
   '/',
   '/index.html',
   '/manifest.json',
-  '/pwa-192x192.png',
-  '/pwa-512x512.png',
-  '/pwa-maskable-512x512.png',
-  '/apple-touch-icon.png',
-  '/icon.svg',
-  '/favicon.ico'
+  '/logo.png',
+  '/favicon.ico',
+  '/favicon.png',
+  '/icons/neon-logo-192.png',
+  '/icons/neon-logo-512.png',
+  '/icons/neon-logo-maskable-192.png',
+  '/icons/neon-logo-maskable-512.png',
+  '/icons/neon-touch-icon.png',
+  '/icons/neon-favicon.png',
+  '/neon-logo-192.png',
+  '/neon-logo-512.png',
+  '/neon-touch-icon.png',
+  '/apple-touch-icon.png'
 ];
 
-// Install event: cache core shell assets
+// Install event: cache core shell assets with fault tolerance
 self.addEventListener('install', (event) => {
+  self.skipWaiting();
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(PRECACHE_ASSETS);
-    }).then(() => self.skipWaiting())
+    caches.open(CACHE_NAME).then(async (cache) => {
+      await Promise.allSettled(
+        PRECACHE_ASSETS.map(async (url) => {
+          try {
+            await cache.add(url);
+          } catch (err) {
+            console.warn('[PrintFlow SW] Cache skipped for asset:', url, err);
+          }
+        })
+      );
+    })
   );
 });
 
-// Activate event: clean up outdated caches
+// Activate event: clean up outdated caches immediately and claim clients
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((cacheNames) => {
@@ -34,14 +50,18 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Listen for skip waiting messages from the client
+// Listen for messages from the client
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     self.skipWaiting();
   }
+  if (event.data && event.data.type === 'CLEAR_ALL_CACHES') {
+    caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k))));
+    self.skipWaiting();
+  }
 });
 
-// Fetch event: Network-first for API/Supabase calls, Stale-While-Revalidate for static assets
+// Fetch event: Network-first for dynamic/Supabase requests, Stale-While-Revalidate for static assets
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
@@ -50,7 +70,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Handle navigation requests (SPA HTML entry)
+  // Handle SPA navigation requests with proper offline fallback
   if (event.request.mode === 'navigate') {
     event.respondWith(
       fetch(event.request)
@@ -61,26 +81,34 @@ self.addEventListener('fetch', (event) => {
           }
           return response;
         })
-        .catch(() => caches.match('/index.html') || caches.match('/'))
+        .catch(async () => {
+          const cachedIndex = await caches.match('/index.html');
+          if (cachedIndex) return cachedIndex;
+          const cachedRoot = await caches.match('/');
+          if (cachedRoot) return cachedRoot;
+          return new Response('<!DOCTYPE html><html><body><h1>PrintFlow 3D</h1><p>Conecte-se à internet para carregar o aplicativo.</p></body></html>', {
+            headers: { 'Content-Type': 'text/html; charset=utf-8' },
+            status: 200
+          });
+        })
     );
     return;
   }
 
-  // Stale-While-Revalidate for app assets
+  // Stale-While-Revalidate for static assets
   event.respondWith(
     caches.match(event.request).then((cachedResponse) => {
-      const fetchPromise = fetch(event.request).then((networkResponse) => {
-        if (networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
-          const responseToCache = networkResponse.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, responseToCache);
-          });
-        }
-        return networkResponse;
-      }).catch((err) => {
-        // Return cached response if offline
-        return cachedResponse;
-      });
+      const fetchPromise = fetch(event.request)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
+            const responseToCache = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => {
+              cache.put(event.request, responseToCache);
+            });
+          }
+          return networkResponse;
+        })
+        .catch(() => cachedResponse);
 
       return cachedResponse || fetchPromise;
     })
