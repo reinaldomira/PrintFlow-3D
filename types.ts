@@ -109,6 +109,7 @@ export interface Part {
   category: string;
   material: string; 
   weight: number; 
+  unitsPerPrint?: number; // Quantidade de peças produzidas na mesma impressão / lote (padrão: 1)
   recipe: PartRecipeItem[]; 
   supplies?: PartSupplyItem[];
   printTime: number; 

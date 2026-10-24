@@ -6,7 +6,7 @@ import { formatCurrency, calculatePartCosts, MATERIALS } from '../constants';
 import { 
   Plus, Search, Trash2, Edit2, Upload, X, Layers, Image as ImageIcon, 
   Loader2, PlusCircle, Camera, Monitor, Clock, Zap, CheckCircle2, AlertTriangle,
-  PackageCheck, Sparkles
+  PackageCheck, Sparkles, Boxes
 } from 'lucide-react';
 import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 
@@ -26,6 +26,18 @@ const Catalog: React.FC = () => {
     if (!editingPart) return null;
     return calculatePartCosts(editingPart, filaments, printers, settings, supplies);
   }, [editingPart, filaments, printers, settings, supplies]);
+
+  // Alerta de proteção antes de recarregar caso haja peça sendo editada
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isModalOpen && editingPart?.name) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isModalOpen, editingPart?.name]);
 
   const compressImage = (file: File): Promise<{ blob: Blob; dataUrl: string }> => {
     return new Promise((resolve) => {
@@ -101,45 +113,101 @@ const Catalog: React.FC = () => {
     
     try {
       const calculated = calculatePartCosts(editingPart, filaments, printers, settings, supplies);
+      const rawSupplies = editingPart.supplies || [];
+      const rawUnits = Number(editingPart.unitsPerPrint);
+      const unitsPerPrint = (!isNaN(rawUnits) && rawUnits >= 1) ? Math.floor(rawUnits) : 1;
+
+      // Remove marcadores de fallback anteriores do array de filamentos
+      const cleanRecipe = (editingPart.recipe || []).filter((r: any) => 
+        !r._embeddedSupplies && !r._supplies && !r._metadata && !r._unitsPerPrint
+      );
+
+      const embeddedItems: any[] = [];
+      if (rawSupplies.length > 0) {
+        embeddedItems.push({ _embeddedSupplies: rawSupplies });
+      }
+      if (unitsPerPrint > 1) {
+        embeddedItems.push({ _metadata: { unitsPerPrint } });
+      }
 
       const payload: any = { 
         user_id: user.id,
-        name: editingPart.name,
+        name: editingPart.name.trim(),
         category: editingPart.category || settings.categories[0],
         material: editingPart.material || 'PLA',
         weight: Number(editingPart.weight) || 0,
         printTime: Number(editingPart.printTime) || 0,
         postProcessingTime: Number(editingPart.postProcessingTime) || 0,
         printerId: editingPart.printerId || null,
-        filamentCost: calculated.materialCost,
-        energyCost: calculated.energyCost,
+        filamentCost: calculated.batchMaterialCost,
+        energyCost: calculated.batchEnergyCost,
         wastePercent: Number(editingPart.wastePercent) || 5,
         profitMargin: Number(editingPart.profitMargin) || settings.defaultProfitMargin,
-        recipe: editingPart.recipe || [],
-        supplies: editingPart.supplies || [],
+        recipe: embeddedItems.length > 0 ? [...cleanRecipe, ...embeddedItems] : cleanRecipe,
         imageUrl: editingPart.imageUrl || null,
         updatedAt: new Date().toISOString()
       };
 
-      let result;
+      const fullPayload = {
+        ...payload,
+        supplies: rawSupplies,
+        unitsPerPrint
+      };
+
+      const isColumnMissingError = (err: any) => {
+        if (!err) return false;
+        const msg = (err.message || '').toLowerCase();
+        return (
+          msg.includes('supplies') || 
+          msg.includes('unitsperprint') || 
+          msg.includes('units_per_print') || 
+          msg.includes('column') || 
+          msg.includes('schema cache') ||
+          err.code === 'PGRST204' || 
+          err.code === 'PGRST205' || 
+          err.code === '42703'
+        );
+      };
+
+      let savedId = editingPart.id;
+      let finalResult;
+
       if (editingPart.id) {
-        result = await supabase.from('parts').update(payload).eq('id', editingPart.id);
-        if (result.error && (result.error.message?.includes('supplies') || result.error.code === 'PGRST204' || result.error.code === '42703')) {
-          const fallbackPayload = { ...payload };
-          delete fallbackPayload.supplies;
-          result = await supabase.from('parts').update(fallbackPayload).eq('id', editingPart.id);
+        finalResult = await supabase.from('parts').update(fullPayload).eq('id', editingPart.id).select().single();
+        if (finalResult.error && isColumnMissingError(finalResult.error)) {
+          // Salva sem colunas ausentes no schema nativo; insumos e unitsPerPrint estão seguros no campo recipe embutido
+          finalResult = await supabase.from('parts').update(payload).eq('id', editingPart.id).select().single();
         }
       } else {
         payload.createdAt = new Date().toISOString();
-        result = await supabase.from('parts').insert([payload]);
-        if (result.error && (result.error.message?.includes('supplies') || result.error.code === 'PGRST204' || result.error.code === '42703')) {
-          const fallbackPayload = { ...payload };
-          delete fallbackPayload.supplies;
-          result = await supabase.from('parts').insert([fallbackPayload]);
+        fullPayload.createdAt = payload.createdAt;
+        finalResult = await supabase.from('parts').insert([fullPayload]).select().single();
+        if (finalResult.error && isColumnMissingError(finalResult.error)) {
+          finalResult = await supabase.from('parts').insert([payload]).select().single();
+        }
+        if (finalResult.data?.id) {
+          savedId = finalResult.data.id;
         }
       }
 
-      if (result.error) throw result.error;
+      if (finalResult.error) throw finalResult.error;
+
+      // Salva no cache local de insumos e metadados por peça para acesso instantâneo
+      if (savedId) {
+        try {
+          const suppKey = `printflow_part_supplies_${user.id}`;
+          const storedSupp = localStorage.getItem(suppKey);
+          const suppMap = storedSupp ? JSON.parse(storedSupp) : {};
+          suppMap[savedId] = rawSupplies;
+          localStorage.setItem(suppKey, JSON.stringify(suppMap));
+
+          const metaKey = `printflow_part_metadata_${user.id}`;
+          const storedMeta = localStorage.getItem(metaKey);
+          const metaMap = storedMeta ? JSON.parse(storedMeta) : {};
+          metaMap[savedId] = { unitsPerPrint };
+          localStorage.setItem(metaKey, JSON.stringify(metaMap));
+        } catch (e) {}
+      }
 
       await refreshData();
       setIsModalOpen(false);
@@ -163,6 +231,28 @@ const Catalog: React.FC = () => {
     try {
       // Atualização otimista imediata para resposta ágil
       setParts(parts.filter(p => p.id !== idToDelete));
+      
+      // Limpa cache local de insumos e metadados da peça excluída
+      try {
+        if (user) {
+          const suppKey = `printflow_part_supplies_${user.id}`;
+          const storedSupp = localStorage.getItem(suppKey);
+          if (storedSupp) {
+            const suppMap = JSON.parse(storedSupp);
+            delete suppMap[idToDelete];
+            localStorage.setItem(suppKey, JSON.stringify(suppMap));
+          }
+
+          const metaKey = `printflow_part_metadata_${user.id}`;
+          const storedMeta = localStorage.getItem(metaKey);
+          if (storedMeta) {
+            const metaMap = JSON.parse(storedMeta);
+            delete metaMap[idToDelete];
+            localStorage.setItem(metaKey, JSON.stringify(metaMap));
+          }
+        }
+      } catch (e) {}
+
       const { error } = await supabase.from('parts').delete().eq('id', idToDelete);
       if (error) throw error;
 
@@ -171,9 +261,7 @@ const Catalog: React.FC = () => {
       setDeleteTarget(null);
       await refreshData();
     } catch (err: any) {
-      console.error('Erro ao deletar peça:', err);
-      setActionNotice({ type: 'error', message: 'Erro ao excluir modelo: ' + (err.message || 'Falha no banco de dados') });
-      await refreshData();
+      setActionNotice({ type: 'error', message: 'Erro ao excluir modelo: ' + err.message });
     } finally {
       setIsDeleting(false);
     }
@@ -241,6 +329,7 @@ const Catalog: React.FC = () => {
               category: settings.categories[0], 
               material: 'PLA',
               weight: 0, 
+              unitsPerPrint: 1,
               recipe: [], 
               supplies: [],
               printTime: 0, 
@@ -292,12 +381,17 @@ const Catalog: React.FC = () => {
                 ) : (
                   <div className="w-full h-full flex items-center justify-center text-zinc-700"><ImageIcon className="w-10 h-10" /></div>
                 )}
+                {part.unitsPerPrint && part.unitsPerPrint > 1 && (
+                  <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-zinc-950/85 backdrop-blur-sm border border-emerald-500/40 text-[9px] font-black text-emerald-400 shadow-md">
+                    {part.unitsPerPrint} un/mesa
+                  </div>
+                )}
                 <div className="absolute top-2 right-2 flex flex-col gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all sm:translate-x-2 sm:group-hover:translate-x-0">
                   <button 
                     type="button"
                     onClick={(e) => { 
                       e.stopPropagation();
-                      setEditingPart({ ...part, supplies: part.supplies || [] }); 
+                      setEditingPart({ ...part, unitsPerPrint: part.unitsPerPrint || 1, supplies: part.supplies || [] }); 
                       setImageNotice(null); 
                       setIsModalOpen(true); 
                     }} 
@@ -331,9 +425,19 @@ const Catalog: React.FC = () => {
                     )}
                   </div>
                 </div>
-                <div className="mt-3 pt-2 border-t border-zinc-800/60 flex items-center justify-between">
-                  <span className="text-[10px] text-zinc-500">{part.weight}g</span>
-                  <p className="text-emerald-500 font-black text-sm">{formatCurrency(partCostInfo.suggestedPrice)}</p>
+                <div className="mt-3 pt-2 border-t border-zinc-800/60 flex flex-col gap-1">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-zinc-500 font-medium">
+                      {part.weight}g {part.unitsPerPrint && part.unitsPerPrint > 1 ? `(lote: ${part.unitsPerPrint}un)` : ''}
+                    </span>
+                    <span className="text-zinc-400 font-semibold" title="Custo unitário de fabricação">
+                      Custo: {formatCurrency(partCostInfo.unitCost)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold uppercase text-zinc-500">Preço Sugerido</span>
+                    <p className="text-emerald-500 font-black text-sm">{formatCurrency(partCostInfo.suggestedPrice)}</p>
+                  </div>
                 </div>
               </div>
             </div>
@@ -542,18 +646,55 @@ const Catalog: React.FC = () => {
                 )}
               </div>
 
+              {/* Quantidade de Peças por Impressão (Mesa / Lote) */}
+              <div className="bg-gradient-to-r from-emerald-950/40 via-zinc-900 to-zinc-900 p-4 rounded-2xl border border-emerald-500/30 space-y-2">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <Boxes className="w-5 h-5 text-emerald-400" />
+                      <label className="text-sm font-black uppercase text-zinc-100 tracking-wide">
+                        Quantidade de peças por impressão
+                      </label>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold">
+                        Lote / Mesa
+                      </span>
+                    </div>
+                    <p className="text-xs text-zinc-400 mt-1">
+                      Quantas unidades idênticas saem nesta mesma impressão. O consumo de filamento e o tempo informados abaixo correspondem a todo este lote na mesa.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 bg-zinc-950/80 p-1.5 rounded-xl border border-zinc-800 self-start sm:self-auto">
+                    <input 
+                      type="number" 
+                      min="1" 
+                      step="1"
+                      required
+                      className="w-20 bg-zinc-900 text-emerald-400 font-black text-center text-lg py-1.5 px-2 rounded-lg outline-none border border-zinc-700 focus:border-emerald-500"
+                      value={editingPart?.unitsPerPrint ?? 1} 
+                      onChange={e => {
+                        const val = parseInt(e.target.value, 10);
+                        updateField('unitsPerPrint', isNaN(val) ? '' : Math.max(1, val));
+                      }} 
+                    />
+                    <span className="text-xs font-bold text-zinc-400 pr-2">unidades</span>
+                  </div>
+                </div>
+              </div>
+
               {/* Metricas de Custo */}
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                 <div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-800">
-                  <span className="text-[10px] font-black uppercase text-zinc-500 block mb-1">Peso Total (g)</span>
+                  <span className="text-[10px] font-black uppercase text-zinc-500 block mb-1">Peso Total Lote (g)</span>
                   <input type="number" className={`bg-transparent w-full text-lg font-black outline-none ${editingPart?.recipe?.length ? 'text-emerald-500' : 'text-zinc-100'}`} 
                     readOnly={editingPart?.recipe?.length! > 0} 
                     value={editingPart?.weight || 0} onChange={e => updateField('weight', Number(e.target.value))} />
+                  <span className="text-[9px] text-zinc-500 block">Filamento total mesa</span>
                 </div>
                 <div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-800">
-                  <span className="text-[10px] font-black uppercase text-zinc-500 block mb-1">Impressão (h)</span>
+                  <span className="text-[10px] font-black uppercase text-zinc-500 block mb-1">Impressão Lote (h)</span>
                   <input type="number" step="0.1" className="bg-transparent w-full text-lg font-black outline-none" 
                     value={editingPart?.printTime || 0} onChange={e => updateField('printTime', Number(e.target.value))} />
+                  <span className="text-[9px] text-zinc-500 block">Tempo total fatiador</span>
                 </div>
                 <div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-800">
                   <span className="text-[10px] font-black uppercase text-zinc-500 block mb-1 flex items-center gap-1">
@@ -561,36 +702,124 @@ const Catalog: React.FC = () => {
                   </span>
                   <input type="number" step="0.1" placeholder="Ex: 0.5" className="bg-transparent w-full text-lg font-black outline-none text-emerald-400" 
                     value={editingPart?.postProcessingTime || 0} onChange={e => updateField('postProcessingTime', Number(e.target.value))} />
+                  <span className="text-[9px] text-zinc-500 block">Pós-processamento lote</span>
                 </div>
                 <div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-800">
-                  <span className="text-[10px] font-black uppercase text-zinc-500 block mb-1">Margem %</span>
-                  <input type="number" className="bg-transparent w-full text-lg font-black outline-none" 
+                  <span className="text-[10px] font-black uppercase text-zinc-500 block mb-1">Margem Lucro %</span>
+                  <input type="number" className="bg-transparent w-full text-lg font-black outline-none text-emerald-400" 
                     value={editingPart?.profitMargin || 0} onChange={e => updateField('profitMargin', Number(e.target.value))} />
+                  <span className="text-[9px] text-zinc-500 block">Margem sobre custo</span>
                 </div>
                 <div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-800 col-span-2 sm:col-span-1">
                   <span className="text-[10px] font-black uppercase text-zinc-500 block mb-1">Perda / Falha %</span>
-                  <input type="number" className="bg-transparent w-full text-lg font-black outline-none" 
+                  <input type="number" className="bg-transparent w-full text-lg font-black outline-none text-amber-400" 
                     value={editingPart?.wastePercent || 0} onChange={e => updateField('wastePercent', Number(e.target.value))} />
+                  <span className="text-[9px] text-zinc-500 block">Risco filam./energia</span>
                 </div>
               </div>
 
-              {/* Detalhamento de Custos */}
-              <div className="bg-zinc-950 p-5 rounded-2xl border border-zinc-800 space-y-3">
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs text-zinc-400 pb-3 border-b border-zinc-800">
-                  <div>Material: <span className="text-zinc-200 font-bold">{formatCurrency(costs?.materialCost || 0)}</span></div>
-                  <div>Insumos: <span className="text-cyan-300 font-bold">{formatCurrency(costs?.suppliesCost || 0)}</span></div>
-                  <div>Energia: <span className="text-zinc-200 font-bold">{formatCurrency(costs?.energyCost || 0)}</span></div>
-                  <div>Mão de Obra: <span className="text-zinc-200 font-bold">{formatCurrency(costs?.laborCost || 0)}</span></div>
-                  <div>Manutenção: <span className="text-zinc-200 font-bold">{formatCurrency(costs?.maintenanceCost || 0)}</span></div>
+              {/* Detalhamento de Custos: DESTAQUE UNITÁRIO + RESUMO DO LOTE */}
+              <div className="bg-zinc-950 p-5 rounded-2xl border border-zinc-800 space-y-4">
+                {/* DESTAQUE PRINCIPAL: CUSTO UNITÁRIO DE FABRICAÇÃO E PREÇO UNITÁRIO */}
+                <div className="p-4 rounded-xl bg-gradient-to-r from-emerald-950/60 via-zinc-900 to-zinc-900 border-2 border-emerald-500/40 shadow-lg">
+                  <div className="flex items-center justify-between pb-2 mb-3 border-b border-zinc-800/80">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-5 h-5 text-emerald-400" />
+                      <span className="text-xs font-black uppercase tracking-wider text-emerald-400">
+                        Valores por Unidade (1 Peça)
+                      </span>
+                    </div>
+                    {(costs?.unitsPerPrint || 1) > 1 && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+                        Lote de {costs?.unitsPerPrint} unidades na mesa
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    {/* Custo Unitário de Fabricação (MÁXIMO DESTAQUE) */}
+                    <div className="bg-zinc-900/90 p-3.5 rounded-xl border border-zinc-700/60">
+                      <div className="text-[10px] font-black uppercase tracking-wider text-zinc-400 mb-1">
+                        Custo Unitário de Fabricação
+                      </div>
+                      <div className="text-2xl sm:text-3xl font-black text-white">
+                        {formatCurrency(costs?.unitTotalCost || 0)}
+                      </div>
+                      {(costs?.unitsPerPrint || 1) > 1 ? (
+                        <div className="text-[10px] text-zinc-400 mt-1">
+                          {formatCurrency(costs?.batchTotalCost || 0)} ÷ {costs?.unitsPerPrint} un
+                        </div>
+                      ) : (
+                        <div className="text-[10px] text-zinc-500 mt-1">Custo de 1 unidade</div>
+                      )}
+                    </div>
+
+                    {/* Preço de Venda Unitário Sugerido */}
+                    <div className="bg-zinc-900/90 p-3.5 rounded-xl border border-emerald-500/30">
+                      <div className="text-[10px] font-black uppercase tracking-wider text-emerald-400 mb-1">
+                        Preço Sugerido por Unidade
+                      </div>
+                      <div className="text-2xl sm:text-3xl font-black text-emerald-400">
+                        {formatCurrency(costs?.unitSuggestedPrice || 0)}
+                      </div>
+                      <div className="text-[10px] text-emerald-500/80 mt-1">
+                        Margem de {editingPart?.profitMargin || 0}%
+                      </div>
+                    </div>
+
+                    {/* Lucro Estimado por Unidade */}
+                    <div className="bg-zinc-900/90 p-3.5 rounded-xl border border-zinc-700/60">
+                      <div className="text-[10px] font-black uppercase tracking-wider text-zinc-400 mb-1">
+                        Lucro Estimado por Unidade
+                      </div>
+                      <div className="text-2xl sm:text-3xl font-black text-zinc-100">
+                        {formatCurrency(costs?.unitProfit || 0)}
+                      </div>
+                      <div className="text-[10px] text-zinc-500 mt-1">
+                        {formatCurrency(costs?.unitSuggestedPrice || 0)} - {formatCurrency(costs?.unitTotalCost || 0)}
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
-                <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-2 pt-2">
-                  <div className="text-xs font-bold text-zinc-500">
-                    Custo Total de Produção: <span className="text-zinc-300 font-black text-sm">{formatCurrency(costs?.totalCost || 0)}</span>
+                {/* RESUMO DO LOTE COMPLETO (MESA) */}
+                <div className="p-4 rounded-xl bg-zinc-900/60 border border-zinc-800 space-y-3">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-zinc-300 flex items-center gap-1.5">
+                      <Boxes className="w-4 h-4 text-zinc-400" />
+                      Resumo da Impressão Completa na Mesa ({costs?.unitsPerPrint || 1} {((costs?.unitsPerPrint || 1) === 1 ? 'peça' : 'peças')})
+                    </span>
+                    <span className="text-[11px] text-zinc-500 font-mono">
+                      Filamento: {costs?.batchWeight || 0}g • Tempo: {costs?.batchPrintTime || 0}h
+                    </span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-black uppercase text-zinc-400">Preço Sugerido:</span>
-                    <span className="text-2xl font-black text-emerald-500">{formatCurrency(costs?.suggestedPrice || 0)}</span>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs pt-1">
+                    <div className="bg-zinc-950/60 p-2.5 rounded-lg border border-zinc-800/80">
+                      <span className="text-[9px] uppercase font-bold text-zinc-500 block">Custo Total do Lote</span>
+                      <span className="text-sm font-black text-zinc-200">{formatCurrency(costs?.batchTotalCost || 0)}</span>
+                    </div>
+                    <div className="bg-zinc-950/60 p-2.5 rounded-lg border border-zinc-800/80">
+                      <span className="text-[9px] uppercase font-bold text-zinc-500 block">Preço Total do Lote</span>
+                      <span className="text-sm font-black text-emerald-400">{formatCurrency(costs?.batchSuggestedPrice || 0)}</span>
+                    </div>
+                    <div className="bg-zinc-950/60 p-2.5 rounded-lg border border-zinc-800/80">
+                      <span className="text-[9px] uppercase font-bold text-zinc-500 block">Lucro Total do Lote</span>
+                      <span className="text-sm font-black text-zinc-200">{formatCurrency(costs?.batchProfit || 0)}</span>
+                    </div>
+                    <div className="bg-zinc-950/60 p-2.5 rounded-lg border border-zinc-800/80">
+                      <span className="text-[9px] uppercase font-bold text-zinc-500 block">Perda/Risco Lote</span>
+                      <span className="text-sm font-black text-amber-400">{formatCurrency(costs?.batchWasteCost || 0)}</span>
+                    </div>
+                  </div>
+
+                  {/* Composição detalhada do custo do lote */}
+                  <div className="pt-2 border-t border-zinc-800/60 grid grid-cols-2 sm:grid-cols-5 gap-2 text-[11px] text-zinc-400">
+                    <div>Material: <span className="text-zinc-200 font-bold">{formatCurrency(costs?.batchMaterialCost || 0)}</span></div>
+                    <div>Insumos: <span className="text-cyan-300 font-bold">{formatCurrency(costs?.batchSuppliesCost || 0)}</span></div>
+                    <div>Energia: <span className="text-zinc-200 font-bold">{formatCurrency(costs?.batchEnergyCost || 0)}</span></div>
+                    <div>Mão de Obra: <span className="text-zinc-200 font-bold">{formatCurrency(costs?.batchLaborCost || 0)}</span></div>
+                    <div>Manutenção: <span className="text-zinc-200 font-bold">{formatCurrency(costs?.batchMaintenanceCost || 0)}</span></div>
                   </div>
                 </div>
               </div>

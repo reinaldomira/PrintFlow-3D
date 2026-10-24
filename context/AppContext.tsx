@@ -9,7 +9,8 @@ import {
   saveLocalSettings, 
   fetchRemoteSettings, 
   saveRemoteSettings, 
-  sanitizeErrorMessage 
+  sanitizeErrorMessage,
+  extractCarrierData 
 } from '../services/settingsService';
 
 interface AppContextType {
@@ -85,10 +86,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setLoading(false);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (session?.user) {
         setUser({ id: session.user.id, email: session.user.email! });
-      } else {
+      } else if (event === 'SIGNED_OUT') {
         setUser(null);
         setPartsState([]);
         setCustomersState([]);
@@ -108,25 +109,50 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   useEffect(() => {
-    if (user) {
-      refreshData();
-    }
+    if (!user) return;
+
+    refreshData();
+
+    // Inscrição em tempo real para sincronização instantânea de configurações entre celular e computador
+    const settingsChannel = supabase
+      .channel(`realtime:settings:${user.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'settings',
+          filter: `user_id=eq.${user.id}`
+        },
+        (payload) => {
+          if (payload.new && typeof payload.new === 'object') {
+            const updatedRow = payload.new as Record<string, any>;
+            setSettingsState(prev => {
+              const merged = rowToSettings(updatedRow, prev);
+              saveLocalSettings(user.id, merged, false);
+              return merged;
+            });
+            setSettingsSyncState('synced');
+            setSettingsConflict(null);
+          }
+        }
+      )
+      .subscribe();
 
     const handleSyncOnVisible = () => {
-      // Throttle window focus / visibility sync to at least 8 seconds
+      // Sincroniza ao retornar para a aba se passou mais de 45 segundos
       const elapsed = Date.now() - lastRefreshTimeRef.current;
-      if (document.visibilityState === 'visible' && user && elapsed > 8000) {
+      if (document.visibilityState === 'visible' && user && elapsed > 45000) {
         refreshData();
       }
     };
 
     window.addEventListener('visibilitychange', handleSyncOnVisible);
-    window.addEventListener('focus', handleSyncOnVisible);
     window.addEventListener('online', handleSyncOnVisible);
 
     return () => {
+      supabase.removeChannel(settingsChannel);
       window.removeEventListener('visibilitychange', handleSyncOnVisible);
-      window.removeEventListener('focus', handleSyncOnVisible);
       window.removeEventListener('online', handleSyncOnVisible);
     };
   }, [user]);
@@ -186,8 +212,61 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         fetchTable('supplies', 'name')
       ]);
 
-      // Preserva dados já carregados para tabelas cuja consulta falhou (nunca substitui por null ou [])
-      if (partsRes.success && partsRes.data !== null) setPartsState(partsRes.data);
+      // Preserva e normaliza dados de peças, garantindo que insumos vinculados nunca sejam perdidos
+      if (partsRes.success && partsRes.data !== null) {
+        let cachedPartSupplies: Record<string, any[]> = {};
+        let cachedPartMetadata: Record<string, any> = {};
+        try {
+          const storedSupplies = localStorage.getItem(`printflow_part_supplies_${user.id}`);
+          if (storedSupplies) cachedPartSupplies = JSON.parse(storedSupplies);
+          const storedMeta = localStorage.getItem(`printflow_part_metadata_${user.id}`);
+          if (storedMeta) cachedPartMetadata = JSON.parse(storedMeta);
+        } catch (e) {}
+
+        const normalizedParts = partsRes.data.map((row: any) => {
+          let supplies = row.supplies;
+          // Se row.supplies for nulo/vazio (ex: coluna ausente no banco), restaura do cache ou do recipe embutido
+          if (!Array.isArray(supplies) || supplies.length === 0) {
+            if (cachedPartSupplies[row.id] && Array.isArray(cachedPartSupplies[row.id])) {
+              supplies = cachedPartSupplies[row.id];
+            } else if (Array.isArray(row.recipe)) {
+              const embedded = row.recipe.find((item: any) => item && (item._embeddedSupplies || item._supplies));
+              if (embedded && Array.isArray(embedded._embeddedSupplies || embedded._supplies)) {
+                supplies = embedded._embeddedSupplies || embedded._supplies;
+              }
+            }
+          }
+
+          // Restaura unitsPerPrint (quantidade de peças por impressão / lote)
+          let unitsPerPrint = Number(row.unitsPerPrint ?? row.units_per_print);
+          if (!unitsPerPrint || isNaN(unitsPerPrint) || unitsPerPrint < 1) {
+            if (cachedPartMetadata[row.id]?.unitsPerPrint) {
+              unitsPerPrint = Number(cachedPartMetadata[row.id].unitsPerPrint);
+            } else if (Array.isArray(row.recipe)) {
+              const meta = row.recipe.find((item: any) => item && (item._metadata || item._unitsPerPrint));
+              if (meta?._metadata?.unitsPerPrint) unitsPerPrint = Number(meta._metadata.unitsPerPrint);
+              else if (meta?._unitsPerPrint) unitsPerPrint = Number(meta._unitsPerPrint);
+            }
+          }
+          if (!unitsPerPrint || isNaN(unitsPerPrint) || unitsPerPrint < 1) {
+            unitsPerPrint = 1;
+          }
+
+          // Remove marcadores internos (_embeddedSupplies, _metadata, _unitsPerPrint) do array de filamentos
+          const cleanRecipe = Array.isArray(row.recipe) 
+            ? row.recipe.filter((item: any) => item && !item._embeddedSupplies && !item._supplies && !item._metadata && !item._unitsPerPrint) 
+            : [];
+
+          return {
+            ...row,
+            recipe: cleanRecipe,
+            supplies: supplies || [],
+            unitsPerPrint: Math.floor(unitsPerPrint)
+          };
+        });
+
+        setPartsState(normalizedParts);
+      }
       if (customersRes.success && customersRes.data !== null) setCustomersState(customersRes.data);
       if (ordersRes.success && ordersRes.data !== null) setOrdersState(ordersRes.data);
       if (filamentsRes.success && filamentsRes.data !== null) setFilamentsState(filamentsRes.data);
@@ -236,21 +315,42 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
         } else if (remoteData) {
           const resolved = rowToSettings(remoteData, fallback);
-          // Determina se a nuvem tem as colunas completas ou apenas as base
-          const isFullCloud = ('business_info' in remoteData || 'businessInfo' in remoteData) &&
-            ('hourly_labor_rate' in remoteData || 'hourlyLaborRate' in remoteData);
           setSettingsState(resolved);
-          saveLocalSettings(user.id, resolved, !isFullCloud);
-          setSettingsSyncState(isFullCloud ? 'synced' : 'pending_local');
+          saveLocalSettings(user.id, resolved, false);
+          setSettingsSyncState('synced');
           setSettingsConflict(null);
+
+          // Auto-migração e auto-upload:
+          // Se o dispositivo local continha dados comerciais salvos (ex: editados no celular)
+          // mas a nuvem ainda não os tinha registrado, envia imediatamente ao Supabase com o carrier
+          const localHasBusiness = localCache?.settings?.businessInfo &&
+            Object.values(localCache.settings.businessInfo).some(v => v !== null && v !== undefined && String(v).trim() !== '');
+          const { extData } = extractCarrierData(remoteData.categories);
+          const remoteHasBusiness = (remoteData.business_info && Object.values(remoteData.business_info).some(v => v !== null && v !== undefined && String(v).trim() !== '')) ||
+            (extData?.businessInfo && Object.values(extData.businessInfo).some(v => v !== null && v !== undefined && String(v).trim() !== ''));
+
+          if (localHasBusiness && !remoteHasBusiness) {
+            console.log('Dados comerciais locais detectados. Sincronizando automaticamente com Supabase Cloud...');
+            saveRemoteSettings(user.id, resolved).then((res) => {
+              if (res.success) {
+                console.log('Dados comerciais sincronizados na nuvem!');
+                saveLocalSettings(user.id, resolved, false);
+                setSettingsSyncState('synced');
+              }
+            }).catch(err => {
+              console.warn('Falha no auto-upload de dados comerciais locais:', err);
+            });
+          }
         } else {
           // Sem registro remoto ainda (primeiro acesso)
           if (localCache) {
             setSettingsState(localCache.settings);
-            setSettingsSyncState('pending_local');
+            saveRemoteSettings(user.id, localCache.settings).then(() => {
+              setSettingsSyncState('synced');
+            });
           } else {
             setSettingsState(DEFAULT_SETTINGS);
-            setSettingsSyncState('pending_local');
+            setSettingsSyncState('synced');
           }
         }
       } catch (err: any) {

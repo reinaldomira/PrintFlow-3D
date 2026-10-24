@@ -49,7 +49,7 @@ export const PricingCalculatorModal: React.FC<PricingCalculatorModalProps> = ({
   initialFinancials,
   onApplyToOrder
 }) => {
-  const { parts, filaments, printers, settings } = useApp();
+  const { parts, filaments, printers, settings, supplies } = useApp();
 
   // Modo de cálculo de custo base: Catálogo ou Manual
   const [costMode, setCostMode] = useState<'manual' | 'catalog'>('manual');
@@ -114,12 +114,12 @@ export const PricingCalculatorModal: React.FC<PricingCalculatorModalProps> = ({
     selectedParts.forEach(item => {
       const part = parts.find(p => p.id === item.partId);
       if (!part) return;
-      const costs = calculatePartCosts(part, filaments, printers, settings);
+      const costs = calculatePartCosts(part, filaments, printers, settings, supplies);
       cost += costs.totalCost * item.quantity;
       price += costs.suggestedPrice * item.quantity;
     });
     return { cost, price };
-  }, [selectedParts, parts, filaments, printers, settings]);
+  }, [selectedParts, parts, filaments, printers, settings, supplies]);
 
   const effectiveProductionCost = costMode === 'catalog' ? catalogTotals.cost : (manualCost * effectiveQuantity);
   const effectiveCatalogPrice = costMode === 'catalog' ? catalogTotals.price : 0;
@@ -355,7 +355,7 @@ export const PricingCalculatorModal: React.FC<PricingCalculatorModalProps> = ({
                     ) : (
                       <div className="max-h-40 overflow-y-auto space-y-1.5 custom-scrollbar pr-1">
                         {parts.map(part => {
-                          const cost = calculatePartCosts(part, filaments, printers, settings);
+                          const cost = calculatePartCosts(part, filaments, printers, settings, supplies);
                           const sel = selectedParts.find(p => p.partId === part.id);
                           const qty = sel?.quantity || 0;
                           return (
@@ -366,7 +366,14 @@ export const PricingCalculatorModal: React.FC<PricingCalculatorModalProps> = ({
                               }`}
                             >
                               <div className="truncate max-w-[220px]">
-                                <span className="font-bold text-white block truncate">{part.name}</span>
+                                <div className="flex items-center gap-1.5 truncate">
+                                  <span className="font-bold text-white truncate">{part.name}</span>
+                                  {part.unitsPerPrint && part.unitsPerPrint > 1 && (
+                                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-zinc-800 text-emerald-400 font-bold shrink-0">
+                                      {part.unitsPerPrint} un/mesa
+                                    </span>
+                                  )}
+                                </div>
                                 <div className="flex items-center gap-2 text-[10px] text-zinc-400 font-mono mt-0.5">
                                   <span>Custo: {formatCurrency(cost.totalCost)}</span>
                                   <span>•</span>

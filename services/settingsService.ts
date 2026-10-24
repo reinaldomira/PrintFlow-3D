@@ -65,10 +65,67 @@ export function sanitizeErrorMessage(msg: unknown): string {
     .replace(/password=[^\s&]+/gi, 'password=[REDACTED]');
 }
 
+export const EXT_SYNC_PREFIX = '__PRINTFLOW_EXT_SYNC__:';
+
+/**
+ * Extrai configurações estendidas (dados comerciais, custos horários, etc.)
+ * que foram embutidas de forma resiliente no array de categorias para sincronização
+ * transparente e imediata entre celular e computador sem exigir migração SQL.
+ */
+export function extractCarrierData(categories?: string[] | null): {
+  cleanCategories: string[];
+  extData: any | null;
+} {
+  if (!Array.isArray(categories)) {
+    return { cleanCategories: [], extData: null };
+  }
+  const cleanCategories: string[] = [];
+  let extData: any = null;
+
+  for (const item of categories) {
+    if (typeof item === 'string' && item.startsWith(EXT_SYNC_PREFIX)) {
+      try {
+        const jsonStr = item.slice(EXT_SYNC_PREFIX.length);
+        extData = JSON.parse(jsonStr);
+      } catch (err) {
+        console.warn('Erro ao decodificar carrier de configurações:', err);
+      }
+    } else if (typeof item === 'string' && item.trim() !== '') {
+      cleanCategories.push(item);
+    }
+  }
+
+  return { cleanCategories, extData };
+}
+
+/**
+ * Serializa dados comerciais e configurações estendidas dentro do array de categorias
+ * para garantir sincronização na nuvem em qualquer banco Supabase.
+ */
+export function embedCarrierInCategories(categories: string[] | undefined, settings: Settings): string[] {
+  const clean = (categories || []).filter(c => typeof c === 'string' && !c.startsWith(EXT_SYNC_PREFIX));
+
+  const extPayload = {
+    businessInfo: settings.businessInfo || {},
+    hourlyLaborRate: settings.hourlyLaborRate,
+    hourlyMaintenanceCost: settings.hourlyMaintenanceCost,
+    defaultPackagingCost: settings.defaultPackagingCost,
+    defaultOtherCosts: settings.defaultOtherCosts,
+    defaultPaymentFeePercent: settings.defaultPaymentFeePercent,
+    defaultMarketplaceFeePercent: settings.defaultMarketplaceFeePercent,
+    defaultTaxPercent: settings.defaultTaxPercent,
+    autoRefreshOrders: settings.autoRefreshOrders,
+    updatedAt: new Date().toISOString()
+  };
+
+  const carrierItem = EXT_SYNC_PREFIX + JSON.stringify(extPayload);
+  return [...clean, carrierItem];
+}
+
 /**
  * Converte registro snake_case do Supabase para o formato TypeScript Settings (camelCase).
- * Se o registro do banco não tiver determinada coluna (ex: schema ainda não migrado),
- * preserva o valor atual do fallbackSettings (cache local do usuário) em vez de resetar para o default.
+ * Suporta colunas nativas e o envelope de sincronização (carrier) embutido,
+ * garantindo compatibilidade total e imediata entre dispositivos móveis e web.
  */
 export function rowToSettings(
   row: Record<string, any> | null | undefined,
@@ -76,35 +133,140 @@ export function rowToSettings(
 ): Settings {
   if (!row) return { ...fallbackSettings };
 
-  const cloudBusiness = (row.business_info && typeof row.business_info === 'object')
+  // 1. Extrai dados do carrier embutido em categories se houver
+  const { cleanCategories, extData } = extractCarrierData(row.categories);
+
+  // 2. Determina businessInfo da nuvem:
+  // Prioridade 1: coluna nativa business_info / businessInfo se tiver dados preenchidos
+  // Prioridade 2: carrier embutido no banco se tiver dados preenchidos
+  // Prioridade 3: fallbackSettings (cache local do dispositivo)
+  let cloudBusiness: BusinessInfo | undefined = undefined;
+
+  const rawBusiness = (row.business_info && typeof row.business_info === 'object')
     ? row.business_info
     : (row.businessInfo && typeof row.businessInfo === 'object')
       ? row.businessInfo
       : undefined;
 
+  const hasRawData = rawBusiness && Object.values(rawBusiness).some(v => v !== null && v !== undefined && String(v).trim() !== '');
+
+  const carrierBusiness = extData?.businessInfo && typeof extData.businessInfo === 'object'
+    ? extData.businessInfo
+    : undefined;
+  const hasCarrierData = carrierBusiness && Object.values(carrierBusiness).some(v => v !== null && v !== undefined && String(v).trim() !== '');
+
+  if (hasRawData) {
+    cloudBusiness = rawBusiness;
+  } else if (hasCarrierData) {
+    cloudBusiness = carrierBusiness;
+  } else if (rawBusiness) {
+    cloudBusiness = rawBusiness;
+  } else if (carrierBusiness) {
+    cloudBusiness = carrierBusiness;
+  }
+
+  // Tenta também resgatar do cache isolado em localStorage se disponível
+  let legacyLocalBusiness: BusinessInfo | undefined = undefined;
+  try {
+    if (typeof localStorage !== 'undefined' && row.user_id) {
+      const stored = localStorage.getItem(`printflow_business_info_${row.user_id}`);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed && Object.values(parsed).some(v => v && String(v).trim() !== '')) {
+          legacyLocalBusiness = parsed;
+        }
+      }
+    }
+  } catch (e) {}
+
   const resolvedBusiness: BusinessInfo = cloudBusiness !== undefined
     ? cloudBusiness
-    : (fallbackSettings.businessInfo || DEFAULT_SETTINGS.businessInfo || {});
+    : (fallbackSettings.businessInfo && Object.values(fallbackSettings.businessInfo).some(v => v && String(v).trim() !== '')
+      ? fallbackSettings.businessInfo
+      : (legacyLocalBusiness || fallbackSettings.businessInfo || DEFAULT_SETTINGS.businessInfo || {}));
+
+  // 3. Custos horários e taxas adicionais (suportando colunas nativas OU carrier OU fallback)
+  const hourlyLaborRate = Number(
+    row.hourly_labor_rate ?? 
+    row.hourlyLaborRate ?? 
+    extData?.hourlyLaborRate ?? 
+    fallbackSettings.hourlyLaborRate ?? 
+    DEFAULT_SETTINGS.hourlyLaborRate
+  );
+
+  const hourlyMaintenanceCost = Number(
+    row.hourly_maintenance_cost ?? 
+    row.hourlyMaintenanceCost ?? 
+    extData?.hourlyMaintenanceCost ?? 
+    fallbackSettings.hourlyMaintenanceCost ?? 
+    DEFAULT_SETTINGS.hourlyMaintenanceCost
+  );
+
+  const defaultPackagingCost = Number(
+    row.default_packaging_cost ?? 
+    row.defaultPackagingCost ?? 
+    extData?.defaultPackagingCost ?? 
+    fallbackSettings.defaultPackagingCost ?? 
+    DEFAULT_SETTINGS.defaultPackagingCost
+  );
+
+  const defaultOtherCosts = Number(
+    row.default_other_costs ?? 
+    row.defaultOtherCosts ?? 
+    extData?.defaultOtherCosts ?? 
+    fallbackSettings.defaultOtherCosts ?? 
+    DEFAULT_SETTINGS.defaultOtherCosts
+  );
+
+  const defaultPaymentFeePercent = Number(
+    row.default_payment_fee_percent ?? 
+    row.defaultPaymentFeePercent ?? 
+    extData?.defaultPaymentFeePercent ?? 
+    fallbackSettings.defaultPaymentFeePercent ?? 
+    DEFAULT_SETTINGS.defaultPaymentFeePercent
+  );
+
+  const defaultMarketplaceFeePercent = Number(
+    row.default_marketplace_fee_percent ?? 
+    row.defaultMarketplaceFeePercent ?? 
+    extData?.defaultMarketplaceFeePercent ?? 
+    fallbackSettings.defaultMarketplaceFeePercent ?? 
+    DEFAULT_SETTINGS.defaultMarketplaceFeePercent
+  );
+
+  const defaultTaxPercent = Number(
+    row.default_tax_percent ?? 
+    row.defaultTaxPercent ?? 
+    extData?.defaultTaxPercent ?? 
+    fallbackSettings.defaultTaxPercent ?? 
+    DEFAULT_SETTINGS.defaultTaxPercent
+  );
+
+  const autoRefreshOrders = typeof row.auto_refresh_orders === 'boolean'
+    ? row.auto_refresh_orders
+    : (typeof row.autoRefreshOrders === 'boolean'
+      ? row.autoRefreshOrders
+      : (typeof extData?.autoRefreshOrders === 'boolean'
+        ? extData.autoRefreshOrders
+        : (fallbackSettings.autoRefreshOrders ?? true)));
 
   return {
     defaultEnergyCost: Number(row.default_energy_cost ?? row.defaultEnergyCost ?? fallbackSettings.defaultEnergyCost ?? DEFAULT_SETTINGS.defaultEnergyCost),
     defaultFilamentCost: Number(row.default_filament_cost ?? row.defaultFilamentCost ?? fallbackSettings.defaultFilamentCost ?? DEFAULT_SETTINGS.defaultFilamentCost),
     defaultProfitMargin: Number(row.default_profit_margin ?? row.defaultProfitMargin ?? fallbackSettings.defaultProfitMargin ?? DEFAULT_SETTINGS.defaultProfitMargin),
-    hourlyLaborRate: Number(row.hourly_labor_rate ?? row.hourlyLaborRate ?? fallbackSettings.hourlyLaborRate ?? DEFAULT_SETTINGS.hourlyLaborRate),
-    hourlyMaintenanceCost: Number(row.hourly_maintenance_cost ?? row.hourlyMaintenanceCost ?? fallbackSettings.hourlyMaintenanceCost ?? DEFAULT_SETTINGS.hourlyMaintenanceCost),
+    hourlyLaborRate,
+    hourlyMaintenanceCost,
     currency: String(row.currency || fallbackSettings.currency || DEFAULT_SETTINGS.currency),
     filamentBrands: Array.isArray(row.filament_brands) ? row.filament_brands : (Array.isArray(row.filamentBrands) ? row.filamentBrands : (fallbackSettings.filamentBrands || DEFAULT_SETTINGS.filamentBrands)),
-    categories: Array.isArray(row.categories) ? row.categories : (fallbackSettings.categories || DEFAULT_SETTINGS.categories),
+    categories: cleanCategories.length > 0 ? cleanCategories : (fallbackSettings.categories || DEFAULT_SETTINGS.categories),
     businessInfo: resolvedBusiness,
-    defaultPackagingCost: Number(row.default_packaging_cost ?? row.defaultPackagingCost ?? fallbackSettings.defaultPackagingCost ?? DEFAULT_SETTINGS.defaultPackagingCost),
-    defaultOtherCosts: Number(row.default_other_costs ?? row.defaultOtherCosts ?? fallbackSettings.defaultOtherCosts ?? DEFAULT_SETTINGS.defaultOtherCosts),
-    defaultPaymentFeePercent: Number(row.default_payment_fee_percent ?? row.defaultPaymentFeePercent ?? fallbackSettings.defaultPaymentFeePercent ?? DEFAULT_SETTINGS.defaultPaymentFeePercent),
-    defaultMarketplaceFeePercent: Number(row.default_marketplace_fee_percent ?? row.defaultMarketplaceFeePercent ?? fallbackSettings.defaultMarketplaceFeePercent ?? DEFAULT_SETTINGS.defaultMarketplaceFeePercent),
-    defaultTaxPercent: Number(row.default_tax_percent ?? row.defaultTaxPercent ?? fallbackSettings.defaultTaxPercent ?? DEFAULT_SETTINGS.defaultTaxPercent),
-    autoRefreshOrders: typeof row.auto_refresh_orders === 'boolean'
-      ? row.auto_refresh_orders
-      : (typeof row.autoRefreshOrders === 'boolean' ? row.autoRefreshOrders : (fallbackSettings.autoRefreshOrders ?? true)),
-    updatedAt: row.updated_at ? String(row.updated_at) : (fallbackSettings.updatedAt || undefined),
+    defaultPackagingCost,
+    defaultOtherCosts,
+    defaultPaymentFeePercent,
+    defaultMarketplaceFeePercent,
+    defaultTaxPercent,
+    autoRefreshOrders,
+    updatedAt: (row.updated_at || extData?.updatedAt) ? String(row.updated_at || extData?.updatedAt) : (fallbackSettings.updatedAt || undefined),
     version: typeof row.version === 'number' ? row.version : (fallbackSettings.version ?? undefined)
   };
 }
@@ -114,6 +276,8 @@ export function rowToSettings(
  * Envia valores definidos para permitir diferenciação precisa entre omissão e valor vazio intencional.
  */
 export function settingsToFullRow(settings: Settings, userId: string): SupabaseSettingsRow {
+  const categoriesWithCarrier = embedCarrierInCategories(settings.categories, settings);
+
   const row: SupabaseSettingsRow = {
     user_id: userId,
     default_energy_cost: typeof settings.defaultEnergyCost === 'number' ? settings.defaultEnergyCost : DEFAULT_SETTINGS.defaultEnergyCost,
@@ -123,7 +287,7 @@ export function settingsToFullRow(settings: Settings, userId: string): SupabaseS
     hourly_maintenance_cost: typeof settings.hourlyMaintenanceCost === 'number' ? settings.hourlyMaintenanceCost : DEFAULT_SETTINGS.hourlyMaintenanceCost,
     currency: settings.currency || DEFAULT_SETTINGS.currency || 'R$',
     filament_brands: settings.filamentBrands || DEFAULT_SETTINGS.filamentBrands,
-    categories: settings.categories || DEFAULT_SETTINGS.categories,
+    categories: categoriesWithCarrier,
     business_info: settings.businessInfo || DEFAULT_SETTINGS.businessInfo || {},
     default_packaging_cost: typeof settings.defaultPackagingCost === 'number' ? settings.defaultPackagingCost : DEFAULT_SETTINGS.defaultPackagingCost,
     default_other_costs: typeof settings.defaultOtherCosts === 'number' ? settings.defaultOtherCosts : DEFAULT_SETTINGS.defaultOtherCosts,
@@ -144,9 +308,13 @@ export function settingsToFullRow(settings: Settings, userId: string): SupabaseS
 export const settingsToRow = settingsToFullRow;
 
 /**
- * Retorna apenas o payload estritamente compatível com as colunas já confirmadas no Supabase
+ * Retorna o payload para a tabela settings do Supabase com o carrier embutido em categories.
+ * Isso garante que dados comerciais, custos horários e taxas sejam sempre salvos no banco remoto
+ * mesmo se a tabela no Supabase não tiver as colunas estendidas criadas.
  */
 export function settingsToBaseRow(settings: Settings, userId: string): Record<string, any> {
+  const categoriesWithCarrier = embedCarrierInCategories(settings.categories, settings);
+
   return {
     user_id: userId,
     default_energy_cost: settings.defaultEnergyCost,
@@ -154,7 +322,7 @@ export function settingsToBaseRow(settings: Settings, userId: string): Record<st
     default_profit_margin: settings.defaultProfitMargin,
     currency: settings.currency || 'R$',
     filament_brands: settings.filamentBrands || [],
-    categories: settings.categories || []
+    categories: categoriesWithCarrier
   };
 }
 
@@ -381,10 +549,12 @@ export async function saveRemoteSettings(
         };
       }
 
+      // O carrier embutido em categories salvou com sucesso todos os dados comerciais e configurações estendidas na nuvem
+      settings.updatedAt = new Date().toISOString();
       return {
         success: true,
-        cloudSyncedFull: false,
-        requiresMigration: true,
+        cloudSyncedFull: true,
+        requiresMigration: false,
         error: null
       };
     }

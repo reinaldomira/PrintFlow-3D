@@ -92,28 +92,12 @@
     <div id="root"></div>
     <script type="module" src="/index.tsx"></script>
     <script>
-      // Service worker registration for PWA installability & auto updates
+      // Service worker registration for PWA installability
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
           navigator.serviceWorker.register('/sw.js', { scope: '/' })
             .then((registration) => {
               console.log('PrintFlow ServiceWorker registrado com sucesso:', registration.scope);
-              
-              // Force check for updates immediately
-              registration.update();
-
-              // Listen for updates found
-              registration.addEventListener('updatefound', () => {
-                const newWorker = registration.installing;
-                if (newWorker) {
-                  newWorker.addEventListener('statechange', () => {
-                    if (newWorker.state === 'installed') {
-                      newWorker.postMessage({ type: 'SKIP_WAITING' });
-                      console.log('Nova versão do PrintFlow instalada e ativada!');
-                    }
-                  });
-                }
-              });
             })
             .catch((error) => {
               console.warn('Falha ao registrar ServiceWorker:', error);

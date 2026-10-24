@@ -217,9 +217,9 @@ export const Supplies: React.FC = () => {
       const packagePrice = Number(editingSupply.packagePrice) || 0;
       const packageUnits = Math.max(1, Number(editingSupply.packageUnits) || 1);
       
-      // Se informou preço e unidades do pacote, calcula custo unitário automaticamente
-      let unitCost = Number(editingSupply.unitCost);
-      if (packagePrice > 0 && packageUnits > 0) {
+      // Prioriza o custo unitário direto preenchido pelo usuário; se não preencheu, calcula pelo pacote
+      let unitCost = Number(editingSupply.unitCost) || 0;
+      if (unitCost <= 0 && packagePrice > 0 && packageUnits > 0) {
         unitCost = Number((packagePrice / packageUnits).toFixed(4));
       }
 
@@ -228,9 +228,9 @@ export const Supplies: React.FC = () => {
         category: editingSupply.category || SUPPLY_CATEGORIES[0],
         quantity: Math.max(0, Number(editingSupply.quantity) || 0),
         min_quantity: Math.max(0, Number(editingSupply.minQuantity) || 10),
-        unit_cost: unitCost || 0,
+        unit_cost: unitCost,
         package_price: packagePrice,
-        package_units: packageUnits,
+        packageUnits: packageUnits,
         supplier: editingSupply.supplier?.trim() || null,
         link: editingSupply.link?.trim() || null,
         notes: editingSupply.notes?.trim() || null,
@@ -1036,61 +1036,92 @@ export const Supplies: React.FC = () => {
                 </div>
               </div>
 
-              {/* Bloco de Pacote e Cálculo Automático de Custo Unitário */}
+              {/* Bloco de Custo Unitário com opção de Lote/Pacote */}
               <div className="p-3 bg-[#0b111e] border border-[#1e2a42] rounded-xl space-y-3">
-                <span className="text-[10px] uppercase font-bold text-cyan-400 tracking-wider block">
-                  Cálculo de Custo por Pacote / Lote
-                </span>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[10px] text-slate-400 mb-1">Preço do Pacote (R$)</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      placeholder="Ex: 25.00"
-                      className="w-full bg-[#121927] border border-[#1e2a42] rounded-lg px-3 py-2 text-xs text-white font-mono"
-                      value={editingSupply?.packagePrice || ''}
-                      onChange={e => {
-                        const price = Number(e.target.value) || 0;
-                        const units = Math.max(1, Number(editingSupply?.packageUnits) || 1);
-                        setEditingSupply(prev => ({
-                          ...prev!,
-                          packagePrice: price,
-                          unitCost: Number((price / units).toFixed(4))
-                        }));
-                      }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[10px] text-slate-400 mb-1">Unidades no Pacote</label>
-                    <input
-                      type="number"
-                      min="1"
-                      step="1"
-                      placeholder="Ex: 100"
-                      className="w-full bg-[#121927] border border-[#1e2a42] rounded-lg px-3 py-2 text-xs text-white font-mono"
-                      value={editingSupply?.packageUnits || ''}
-                      onChange={e => {
-                        const units = Math.max(1, Number(e.target.value) || 1);
-                        const price = Number(editingSupply?.packagePrice) || 0;
-                        setEditingSupply(prev => ({
-                          ...prev!,
-                          packageUnits: units,
-                          unitCost: Number((price / units).toFixed(4))
-                        }));
-                      }}
-                    />
-                  </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] uppercase font-bold text-cyan-400 tracking-wider block">
+                    Custo do Insumo
+                  </span>
+                  <span className="text-[10px] text-slate-500 font-medium">Usado no cálculo de peças</span>
                 </div>
 
-                <div className="flex items-center justify-between text-xs pt-1 border-t border-[#1e2a42]">
-                  <span className="text-slate-400">Custo Unitário Calculado:</span>
-                  <span className="font-mono font-bold text-emerald-400 text-sm">
-                    {formatCurrency(editingSupply?.unitCost || 0)} / unidade
+                {/* Custo Unitário Direto */}
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-200 mb-1">
+                    Custo por Unidade (R$) *
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-mono font-bold text-slate-500">R$</span>
+                    <input
+                      type="number"
+                      step="0.0001"
+                      min="0"
+                      required
+                      placeholder="0.50"
+                      className="w-full bg-[#121927] border border-cyan-500/40 rounded-lg pl-9 pr-3 py-2 text-xs text-emerald-400 font-mono font-bold text-sm focus:outline-none focus:border-cyan-400"
+                      value={editingSupply?.unitCost !== undefined ? editingSupply.unitCost : ''}
+                      onChange={e => {
+                        const val = parseFloat(e.target.value);
+                        setEditingSupply(prev => ({
+                          ...prev!,
+                          unitCost: isNaN(val) ? 0 : val
+                        }));
+                      }}
+                    />
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-1">Ex: se comprou cada argola por R$ 0,40, digite 0.40 aqui.</p>
+                </div>
+
+                {/* Calculadora Opcional por Pacote */}
+                <div className="pt-2 border-t border-[#1e2a42]/80 space-y-2">
+                  <span className="text-[10px] font-bold text-slate-400 block">
+                    OU Calcule pelo Preço do Pacote:
                   </span>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10px] text-slate-500 mb-1">Preço Total do Pacote (R$)</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        placeholder="Ex: 25.00"
+                        className="w-full bg-[#121927] border border-[#1e2a42] rounded-lg px-3 py-1.5 text-xs text-white font-mono"
+                        value={editingSupply?.packagePrice || ''}
+                        onChange={e => {
+                          const price = Number(e.target.value) || 0;
+                          const units = Math.max(1, Number(editingSupply?.packageUnits) || 1);
+                          const calculatedUnit = price > 0 ? Number((price / units).toFixed(4)) : (editingSupply?.unitCost || 0);
+                          setEditingSupply(prev => ({
+                            ...prev!,
+                            packagePrice: price,
+                            unitCost: calculatedUnit
+                          }));
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] text-slate-500 mb-1">Unidades no Pacote</label>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        placeholder="Ex: 50"
+                        className="w-full bg-[#121927] border border-[#1e2a42] rounded-lg px-3 py-1.5 text-xs text-white font-mono"
+                        value={editingSupply?.packageUnits || ''}
+                        onChange={e => {
+                          const units = Math.max(1, Number(e.target.value) || 1);
+                          const price = Number(editingSupply?.packagePrice) || 0;
+                          const calculatedUnit = price > 0 ? Number((price / units).toFixed(4)) : (editingSupply?.unitCost || 0);
+                          setEditingSupply(prev => ({
+                            ...prev!,
+                            packageUnits: units,
+                            unitCost: calculatedUnit
+                          }));
+                        }}
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
 

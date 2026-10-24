@@ -44,10 +44,15 @@ export const calculateOrderFilamentConsumption = (
     const part = parts.find(p => p.id === orderItem.partId);
     if (!part) return;
 
+    const rawUnits = Number(part.unitsPerPrint);
+    const unitsPerPrint = (!isNaN(rawUnits) && rawUnits >= 1) ? Math.floor(rawUnits) : 1;
+
     if (part.recipe && Array.isArray(part.recipe) && part.recipe.length > 0) {
       part.recipe.forEach((recipeItem: any) => {
         if (!recipeItem || !recipeItem.filamentId) return;
-        const grams = Math.round((Number(recipeItem.grams) || 0) * qty);
+        const totalBatchGrams = Number(recipeItem.grams) || 0;
+        const gramsPerUnit = totalBatchGrams / unitsPerPrint;
+        const grams = Math.round(gramsPerUnit * qty);
         if (grams > 0) {
           deductions[recipeItem.filamentId] = (deductions[recipeItem.filamentId] || 0) + grams;
         }
@@ -58,7 +63,9 @@ export const calculateOrderFilamentConsumption = (
       ) || filaments[0];
 
       if (matchedFilament?.id) {
-        const grams = Math.round(Number(part.weight) * qty);
+        const totalBatchWeight = Number(part.weight) || 0;
+        const gramsPerUnit = totalBatchWeight / unitsPerPrint;
+        const grams = Math.round(gramsPerUnit * qty);
         if (grams > 0) {
           deductions[matchedFilament.id] = (deductions[matchedFilament.id] || 0) + grams;
         }
@@ -166,8 +173,36 @@ export const Orders: React.FC = () => {
     arredondamentoComercial: false
   });
   const [showAdvancedPricing, setShowAdvancedPricing] = useState(false);
+  const [draftRestoredNotice, setDraftRestoredNotice] = useState(false);
 
   const location = useLocation();
+
+  // Salva rascunho da venda em tempo real para proteger contra recarregamentos acidentais ou quedas
+  useEffect(() => {
+    if (isModalOpen && !editingOrderId) {
+      if ((orderForm.items && orderForm.items.length > 0) || orderForm.customerId || orderForm.discount > 0) {
+        try {
+          localStorage.setItem('printflow_active_order_draft', JSON.stringify({
+            orderForm,
+            financialForm,
+            savedAt: Date.now()
+          }));
+        } catch (e) {}
+      }
+    }
+  }, [isModalOpen, editingOrderId, orderForm, financialForm]);
+
+  // Alerta de segurança antes de fechar a janela se houver venda em andamento
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isModalOpen && orderForm.items && orderForm.items.length > 0) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isModalOpen, orderForm.items]);
 
   // Abrir modal de novo pedido automaticamente se veio da tela de Clientes
   useEffect(() => {
@@ -274,9 +309,43 @@ export const Orders: React.FC = () => {
     }));
   };
 
+  const discardOrderDraft = () => {
+    try {
+      localStorage.removeItem('printflow_active_order_draft');
+    } catch (e) {}
+    setDraftRestoredNotice(false);
+    setOrderForm({
+      customerId: '',
+      items: [],
+      discount: 0,
+      paymentMethod: PaymentMethod.PIX,
+      status: OrderStatus.QUEUE
+    });
+  };
+
   const openNewOrderModal = () => {
     setEditingOrderId(null);
     setFormError(null);
+
+    // Tenta recuperar rascunho anterior caso a página tenha recarregado
+    try {
+      const storedDraft = localStorage.getItem('printflow_active_order_draft');
+      if (storedDraft) {
+        const parsed = JSON.parse(storedDraft);
+        if (parsed?.orderForm && ((parsed.orderForm.items && parsed.orderForm.items.length > 0) || parsed.orderForm.customerId)) {
+          setOrderForm(parsed.orderForm);
+          if (parsed.financialForm) setFinancialForm(parsed.financialForm);
+          setDraftRestoredNotice(true);
+          setShowAdvancedPricing(false);
+          setIsQuickCustomerOpen(false);
+          setIsCustomItemOpen(false);
+          setIsModalOpen(true);
+          return;
+        }
+      }
+    } catch (e) {}
+
+    setDraftRestoredNotice(false);
     setOrderForm({
       customerId: customers[0]?.id || '',
       items: [],
@@ -459,6 +528,11 @@ export const Orders: React.FC = () => {
       if (saveResult.error) {
         throw new Error(saveResult.error.message || 'Falha ao salvar pedido no Supabase.');
       }
+
+      try {
+        localStorage.removeItem('printflow_active_order_draft');
+      } catch (e) {}
+      setDraftRestoredNotice(false);
 
       await refreshData();
       setIsModalOpen(false);
@@ -1435,6 +1509,23 @@ export const Orders: React.FC = () => {
             </div>
             
             <form onSubmit={handleSaveOrder} className="p-6 space-y-6">
+              {/* Aviso de Rascunho Recuperado Automaticamente */}
+              {draftRestoredNotice && !editingOrderId && (
+                <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl flex items-center justify-between text-xs text-emerald-300 animate-in fade-in">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span><strong>Rascunho recuperado:</strong> Seus itens foram mantidos salvos com segurança.</span>
+                  </div>
+                  <button 
+                    type="button" 
+                    onClick={discardOrderDraft} 
+                    className="text-xs font-bold text-red-400 hover:text-red-300 underline ml-2 shrink-0"
+                  >
+                    Limpar e recomeçar
+                  </button>
+                </div>
+              )}
+
               {/* Banner de Erro caso ocorra */}
               {formError && (
                 <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-2xl flex items-start gap-3 text-red-400 text-sm animate-in fade-in">
