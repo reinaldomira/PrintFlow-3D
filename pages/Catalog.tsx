@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { Part, PartRecipeItem, PartSupplyItem } from '../types';
 import { supabase } from '../services/supabase';

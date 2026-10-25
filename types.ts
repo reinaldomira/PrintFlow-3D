@@ -13,7 +13,9 @@ export enum OrderStatus {
 export enum PaymentMethod {
   PIX = 'Pix',
   CASH = 'Dinheiro',
-  CARD = 'Cartão'
+  CARD = 'Cartão',
+  CREDIT_CARD = 'Cartão',
+  DEBIT_CARD = 'Cartão de Débito'
 }
 
 export interface FinancialConfig {
@@ -149,19 +151,25 @@ export interface Payment {
 export interface Order {
   id: string;
   customerId: string;
+  customer_id?: string;
   items: OrderItem[];
   discount: number;
   totalValue: number;
+  total_value?: number;
   status: OrderStatus;
   payments: Payment[];
   paymentMethod: PaymentMethod;
+  payment_method?: string | PaymentMethod;
   createdAt: string;
+  created_at?: string;
   custosFinanceiros?: FinancialConfig;
   detalhesPrecificacao?: PricingBreakdown;
   consumedFilaments?: Record<string, number>;
   stockDeductionStatus?: 'none' | 'confirmed' | 'partial' | 'refunded';
   stockUpdatedAt?: string;
 }
+
+export type PixKeyType = 'cpf' | 'cnpj' | 'email' | 'phone' | 'random';
 
 export interface BusinessInfo {
   companyName?: string;
@@ -173,6 +181,13 @@ export interface BusinessInfo {
   cityState?: string;
   address?: string;
   logoUrl?: string;
+  // Dados Pix para recebimento e PDFs
+  pixKeyType?: PixKeyType;
+  pixKey?: string;
+  pixReceiverName?: string;
+  pixReceiverDoc?: string; // CPF ou CNPJ do titular (opcional)
+  pixBank?: string; // Instituição financeira / Banco (opcional)
+  pixCity?: string; // Cidade para BR Code (opcional)
 }
 
 export interface Settings {

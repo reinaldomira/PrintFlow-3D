@@ -2,6 +2,13 @@ import { jsPDF } from 'jspdf';
 import { Order, Customer, Part, Filament, Settings } from '../types';
 import { formatCurrency } from '../constants';
 import { supabase } from './supabase';
+import { 
+  getCompletePixData, 
+  isPixPaymentMethod, 
+  formatPixKeyForDisplay, 
+  getPixKeyTypeLabel,
+  PixPayloadResult 
+} from './pixService';
 
 interface QuotePdfParams {
   order: Order;
@@ -158,6 +165,18 @@ export function getRealisticOrderNumber(order: Order): string {
 }
 
 /**
+ * Obtém a forma de pagamento de forma resiliente de qualquer formato (camelCase, snake_case ou array payments)
+ */
+export function resolveOrderPaymentMethod(order: Order): string {
+  const anyOrder = order as any;
+  const method = anyOrder.paymentMethod || 
+    anyOrder.payment_method || 
+    (anyOrder.payments && Array.isArray(anyOrder.payments) && anyOrder.payments[0]?.method) || 
+    'Pix';
+  return String(method).trim();
+}
+
+/**
  * Builds the jsPDF document matching the visual style in the reference (pdf-2_64ef64aa.jpg)
  */
 export async function buildQuotePdfDoc({ order, customer, parts, filaments, settings }: QuotePdfParams): Promise<jsPDF> {
@@ -191,6 +210,30 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
   const emissionDate = formatDate(order.createdAt);
   const validityInfo = getValidityDate(order.createdAt, 15);
   const authHash = generateAuthHash(order.id, emissionDate);
+
+  // Forma de pagamento resolvida de forma confiável
+  const activePaymentMethod = resolveOrderPaymentMethod(order);
+
+  // Cálculo financeiro estrito antecipado para inclusão no payload Pix e QR Code BACEN
+  const subtotalCalc = (order.items || []).reduce(
+    (acc, i) => acc + ((Number(i.unitPrice) || 0) * (Number(i.quantity) || 0)), 
+    0
+  );
+  const discountCalc = Math.max(0, Number(order.discount) || 0);
+  const orderTotalVal = (typeof order.totalValue === 'number' && !isNaN(order.totalValue))
+    ? order.totalValue
+    : Math.max(0, subtotalCalc - discountCalc);
+
+  // Pré-carrega dados Pix e QR Code BACEN se a forma de pagamento for Pix
+  const isPix = isPixPaymentMethod(activePaymentMethod);
+  let pixData: PixPayloadResult | null = null;
+  if (isPix) {
+    try {
+      pixData = await getCompletePixData(business, orderTotalVal, orderNumStr.replace('#', ''));
+    } catch (pixErr) {
+      console.warn('Erro ao carregar dados do Pix:', pixErr);
+    }
+  }
 
   // Pré-carrega logo se existir
   const logoData = await getImageDataUrl(business.logoUrl);
@@ -524,36 +567,14 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
       doc.text('FOTO 3D', imgX + 8, imgY + 17);
     }
 
-    // Texto do Produto (Nome + Badge Material/Tecnologia + Categoria)
+    // Nome da Peça (Apenas o nome limpo e destacado, sem FDM, sem badges e sem descrições técnicas)
     const textDescX = imgX + imgSize + 6;
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(9.5);
+    doc.setFontSize(10.5);
     doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
-    const maxTitleLen = 32;
+    const maxTitleLen = 45;
     const cleanTitle = itemTitle.length > maxTitleLen ? itemTitle.slice(0, maxTitleLen) + '...' : itemTitle;
-    doc.text(cleanTitle, textDescX, currentY + 14);
-
-    // Badge de Material / Tecnologia Real (ex: PLA 3D, PETG 3D, RESINA 3D)
-    const titleWidth = doc.getTextWidth(cleanTitle);
-    const badgeTechX = textDescX + titleWidth + 3;
-    const materialLabel = part?.material ? `${part.material.toUpperCase()} 3D` : 'FDM 3D';
-    const badgeTechWidth = doc.getTextWidth(materialLabel) + 5;
-    doc.setFillColor(colorSoftTeal[0], colorSoftTeal[1], colorSoftTeal[2]);
-    doc.setDrawColor(colorTealBorder[0], colorTealBorder[1], colorTealBorder[2]);
-    doc.roundedRect(badgeTechX, currentY + 10.5, badgeTechWidth, 4.2, 0.8, 0.8, 'FD');
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(5);
-    doc.setTextColor(colorTealDark[0], colorTealDark[1], colorTealDark[2]);
-    doc.text(materialLabel, badgeTechX + 2.5, currentY + 13.5);
-
-    // Subtítulo descritivo
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7);
-    doc.setTextColor(colorMutedText[0], colorMutedText[1], colorMutedText[2]);
-    const subDesc = part?.category
-      ? `Categoria: ${part.category} • Fabricação sob demanda.`
-      : 'Peça fabricada sob demanda conforme especificações do pedido.';
-    doc.text(subDesc.slice(0, 52), textDescX, currentY + 20);
+    doc.text(cleanTitle, textDescX, currentY + 18.5);
 
     // Quantidade
     doc.setFont('helvetica', 'bold');
@@ -644,7 +665,7 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(6.8);
   doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
-  const payMethodText = String(order.paymentMethod || 'A combinar');
+  const payMethodText = String(activePaymentMethod || 'A combinar');
   doc.text(payMethodText.slice(0, 30), condX + 57, gridY1 + 6.5);
 
   // Box 3: Envio / Logística
@@ -757,7 +778,189 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(5.5);
   doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
-  doc.text(order.paymentMethod ? `Pagamento via ${order.paymentMethod}` : 'Valor final do pedido', financeX + 5, finY);
+  doc.text(activePaymentMethod ? `Pagamento via ${activePaymentMethod}` : 'Valor final do pedido', financeX + 5, finY);
+
+  currentY += bottomBoxHeight + 4;
+
+  // 5.3 SEÇÃO: DADOS PARA PAGAMENTO VIA PIX (EXIBIDA AUTOMATICAMENTE SE FORMA DE PAGAMENTO FOR PIX)
+  if (isPix) {
+    const pixBoxHeight = 35;
+    if (currentY + pixBoxHeight > pageHeight - 18) {
+      doc.addPage();
+      currentY = 15;
+    }
+
+    const pixX = marginX;
+    const pixWidth = contentWidth;
+
+    // Fundo do Card Pix com borda verde esmeralda industrial
+    doc.setFillColor(colorCardBg[0], colorCardBg[1], colorCardBg[2]);
+    doc.setDrawColor(colorPrimaryEmerald[0], colorPrimaryEmerald[1], colorPrimaryEmerald[2]);
+    doc.setLineWidth(0.35);
+    doc.roundedRect(pixX, currentY, pixWidth, pixBoxHeight, 2, 2, 'FD');
+
+    // Bullet verde + Título
+    doc.setFillColor(colorPrimaryEmerald[0], colorPrimaryEmerald[1], colorPrimaryEmerald[2]);
+    doc.circle(pixX + 5, currentY + 4.8, 0.9, 'F');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.2);
+    doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
+    doc.text('DADOS PARA PAGAMENTO VIA PIX', pixX + 8, currentY + 5.5);
+
+    const pixBadgeText = 'PAGAMENTO INSTANTÂNEO BACEN';
+    const pixBadgeW = doc.getTextWidth(pixBadgeText) + 4;
+    doc.setFillColor(colorSoftTeal[0], colorSoftTeal[1], colorSoftTeal[2]);
+    doc.setDrawColor(colorTealBorder[0], colorTealBorder[1], colorTealBorder[2]);
+    doc.setLineWidth(0.2);
+    doc.roundedRect(pixX + doc.getTextWidth('DADOS PARA PAGAMENTO VIA PIX') + 11, currentY + 2.5, pixBadgeW, 4, 0.8, 0.8, 'FD');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(5);
+    doc.setTextColor(colorTealDark[0], colorTealDark[1], colorTealDark[2]);
+    doc.text(pixBadgeText, pixX + doc.getTextWidth('DADOS PARA PAGAMENTO VIA PIX') + 13, currentY + 5.2);
+
+    if (business.pixKey && business.pixKey.trim() !== '') {
+      // 1. Linha Superior de Dados (Valor, Tipo de Chave, Chave Pix)
+      const row1Y = currentY + 11.5;
+
+      // Coluna 1: Valor Total do Pedido
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(5.2);
+      doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
+      doc.text('VALOR DO PEDIDO:', pixX + 5, row1Y);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9.5);
+      doc.setTextColor(colorPrimaryEmerald[0], colorPrimaryEmerald[1], colorPrimaryEmerald[2]);
+      doc.text(formatCurrency(total), pixX + 5, row1Y + 4.5);
+
+      // Coluna 2: Tipo de Chave
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(5.2);
+      doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
+      doc.text('TIPO DE CHAVE:', pixX + 42, row1Y);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.2);
+      doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
+      doc.text(getPixKeyTypeLabel(business.pixKeyType), pixX + 42, row1Y + 4.5);
+
+      // Coluna 3: Chave Pix Completa
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(5.2);
+      doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
+      doc.text('CHAVE PIX COMPLETA:', pixX + 78, row1Y);
+
+      doc.setFont('courier', 'bold');
+      doc.setFontSize(8.5);
+      doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
+      const formattedKeyStr = formatPixKeyForDisplay(business.pixKey, business.pixKeyType || 'cpf');
+      doc.text(formattedKeyStr.slice(0, 36), pixX + 78, row1Y + 4.5);
+
+      // 2. Linha Intermediária de Dados (Titular, CPF/CNPJ, Banco)
+      const row2Y = currentY + 21;
+
+      // Titular
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(5.2);
+      doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
+      doc.text('NOME DO TITULAR:', pixX + 5, row2Y);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.2);
+      doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
+      const receiverNameDisplay = (business.pixReceiverName || business.companyName || 'PRINT_3DBR').toUpperCase();
+      doc.text(receiverNameDisplay.slice(0, 30), pixX + 5, row2Y + 4);
+
+      // CPF / CNPJ do Titular (quando cadastrado)
+      if (business.pixReceiverDoc && business.pixReceiverDoc.trim() !== '') {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(5.2);
+        doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
+        doc.text('CPF / CNPJ TITULAR:', pixX + 62, row2Y);
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7);
+        doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
+        doc.text(business.pixReceiverDoc.trim().slice(0, 22), pixX + 62, row2Y + 4);
+      }
+
+      // Instituição Financeira / Banco (quando cadastrada)
+      if (business.pixBank && business.pixBank.trim() !== '') {
+        const bankColX = business.pixReceiverDoc ? pixX + 106 : pixX + 62;
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(5.2);
+        doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
+        doc.text('INSTITUIÇÃO FINANCEIRA:', bankColX, row2Y);
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7);
+        doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
+        doc.text(business.pixBank.trim().slice(0, 24), bankColX, row2Y + 4);
+      }
+
+      // 3. Nota Orientativa / Instrução
+      const notePixY = currentY + 31.5;
+      doc.setFont('helvetica', 'italic');
+      doc.setFontSize(5.2);
+      doc.setTextColor(colorMutedText[0], colorMutedText[1], colorMutedText[2]);
+      doc.text(
+        'Aponte a câmera no app do seu banco para o QR Code ao lado ou use a chave Pix acima. A liquidação é imediata.',
+        pixX + 5,
+        notePixY
+      );
+
+      // 4. Renderização do QR Code Pix BACEN (à direita)
+      if (pixData?.qrCodeDataUrl) {
+        const qrBoxX = pixX + pixWidth - 30;
+        const qrBoxY = currentY + 3.5;
+        doc.setFillColor(255, 255, 255);
+        doc.setDrawColor(colorBorder[0], colorBorder[1], colorBorder[2]);
+        doc.setLineWidth(0.2);
+        doc.roundedRect(qrBoxX, qrBoxY, 26, 26, 1.2, 1.2, 'FD');
+
+        safeAddImage(doc, pixData.qrCodeDataUrl, qrBoxX + 1, qrBoxY + 1, 24, 24);
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(4.8);
+        doc.setTextColor(colorTealDark[0], colorTealDark[1], colorTealDark[2]);
+        doc.text('PIX BR CODE', qrBoxX + 13, qrBoxY + 29.5, { align: 'center' });
+      }
+    } else {
+      // Caso os dados Pix ainda não estejam configurados nas preferências da empresa
+      const alertY = currentY + 13;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(5.5);
+      doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
+      doc.text('VALOR TOTAL A PAGAR:', pixX + 5, alertY);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9);
+      doc.setTextColor(colorPrimaryEmerald[0], colorPrimaryEmerald[1], colorPrimaryEmerald[2]);
+      doc.text(formatCurrency(total), pixX + 5, alertY + 5);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(6.5);
+      doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
+      doc.text('CHAVE PIX PENDENTE DE CADASTRO:', pixX + 48, alertY);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(5.8);
+      doc.setTextColor(colorMutedText[0], colorMutedText[1], colorMutedText[2]);
+      doc.text(
+        'Acesse "Ajustes / Configurações" no sistema Print_3Dbr para cadastrar a chave Pix e titular da conta.',
+        pixX + 48,
+        alertY + 5
+      );
+      doc.text(
+        'Os dados e o QR Code oficial de cobrança serão vinculados automaticamente nas próximas emissões.',
+        pixX + 48,
+        alertY + 9.5
+      );
+    }
+
+    currentY += pixBoxHeight + 4;
+  }
 
   // 6. RODAPÉ COMERCIAL
   const footerY = pageHeight - 16;

@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
-import { Part, Customer, Order, Settings, User, Filament, Printer, BusinessInfo, Supply, PrintFailure } from '../types';
+import { Part, Customer, Order, Settings, User, Filament, Printer, BusinessInfo, Supply, PrintFailure, PaymentMethod } from '../types';
 import { supabase } from '../services/supabase';
 import { 
   SettingsSyncState, 
@@ -268,7 +268,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setPartsState(normalizedParts);
       }
       if (customersRes.success && customersRes.data !== null) setCustomersState(customersRes.data);
-      if (ordersRes.success && ordersRes.data !== null) setOrdersState(ordersRes.data);
+      if (ordersRes.success && ordersRes.data !== null) {
+        const normalizedOrders = (ordersRes.data || []).map((row: any) => {
+          const pm = row.paymentMethod || row.payment_method || (row.payments && row.payments[0]?.method) || PaymentMethod.PIX;
+          const cid = row.customerId || row.customer_id || '';
+          const tv = typeof row.totalValue === 'number' ? row.totalValue : (Number(row.total_value) || 0);
+          const ca = row.createdAt || row.created_at || new Date().toISOString();
+          return {
+            ...row,
+            paymentMethod: pm,
+            payment_method: pm,
+            customerId: cid,
+            customer_id: cid,
+            totalValue: tv,
+            total_value: tv,
+            createdAt: ca,
+            created_at: ca
+          };
+        });
+        setOrdersState(normalizedOrders);
+      }
       if (filamentsRes.success && filamentsRes.data !== null) setFilamentsState(filamentsRes.data);
       if (printersRes.success && printersRes.data !== null) setPrintersState(printersRes.data);
       if (suppliesRes.success && suppliesRes.data !== null) {

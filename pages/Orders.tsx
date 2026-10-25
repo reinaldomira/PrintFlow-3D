@@ -371,11 +371,16 @@ export const Orders: React.FC = () => {
   const openEditOrderModal = (order: Order) => {
     setEditingOrderId(order.id);
     setFormError(null);
+    const resolvedPm = order.paymentMethod || (order as any).payment_method || (order.payments && order.payments[0]?.method) || PaymentMethod.PIX;
     setOrderForm({
-      customerId: order.customerId || '',
+      customerId: order.customerId || (order as any).customer_id || '',
       items: (order.items || []).map(i => ({ ...i })),
       discount: order.discount || 0,
-      paymentMethod: order.paymentMethod || PaymentMethod.PIX,
+      paymentMethod: (resolvedPm === 'Pix' || resolvedPm === PaymentMethod.PIX)
+        ? PaymentMethod.PIX
+        : (resolvedPm === 'Cartão' || resolvedPm === PaymentMethod.CARD)
+        ? PaymentMethod.CARD
+        : PaymentMethod.CASH,
       status: normalizeOrderStatus(order.status)
     });
     if (order.custosFinanceiros) {
@@ -580,29 +585,40 @@ export const Orders: React.FC = () => {
       unitPrice: Math.max(0, Number(item.unitPrice) || 0)
     }));
 
+    const chosenMethod = orderForm.paymentMethod || PaymentMethod.PIX;
+
     const basePayload: any = {
       customerId: safeCustomerId,
+      customer_id: safeCustomerId,
       items: sanitizedItems,
       totalValue: Number(orderTotal) || 0,
+      total_value: Number(orderTotal) || 0,
       status: orderForm.status || OrderStatus.QUEUE,
+      paymentMethod: chosenMethod,
+      payment_method: chosenMethod,
+      discount: Number(orderForm.discount) || 0,
       user_id: user.id
     };
 
     if (!editingOrderId) {
       basePayload.createdAt = new Date().toISOString();
+      basePayload.created_at = new Date().toISOString();
     }
 
     const fullPayload: any = {
       ...basePayload,
       discount: Number(orderForm.discount) || 0,
-      paymentMethod: orderForm.paymentMethod || PaymentMethod.PIX,
+      paymentMethod: chosenMethod,
+      payment_method: chosenMethod,
       custosFinanceiros: financialForm,
+      custos_financeiros: financialForm,
       detalhesPrecificacao: pricingBreakdown,
+      detalhes_precificacao: pricingBreakdown,
       payments: [{
         id: Math.random().toString(36).substring(2, 9),
         amount: Number(orderTotal) || 0,
         date: new Date().toISOString(),
-        method: orderForm.paymentMethod || PaymentMethod.PIX
+        method: chosenMethod
       }]
     };
 
@@ -1891,6 +1907,21 @@ export const Orders: React.FC = () => {
                       </button>
                     ))}
                   </div>
+                  {orderForm.paymentMethod === PaymentMethod.PIX && (
+                    <p className="text-[10px] text-zinc-400 mt-2">
+                      {settings.businessInfo?.pixKey ? (
+                        <span className="text-emerald-400 flex items-center gap-1">
+                          <CheckCircle2 className="w-3 h-3 text-emerald-400 flex-shrink-0" />
+                          <span>Chave Pix cadastrada: será inserida automaticamente com QR Code no PDF.</span>
+                        </span>
+                      ) : (
+                        <span className="text-amber-400 flex items-center gap-1">
+                          <AlertCircle className="w-3 h-3 text-amber-400 flex-shrink-0" />
+                          <span>Chave Pix ainda não cadastrada em Ajustes/Configurações.</span>
+                        </span>
+                      )}
+                    </p>
+                  )}
                 </div>
 
                 <div>

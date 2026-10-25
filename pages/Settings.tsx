@@ -4,10 +4,12 @@ import { BusinessInfo } from '../types';
 import { 
   LogOut, Plus, Trash2, Database, Copy, AlertCircle, Check, 
   User as UserIcon, Tag, Layers, Zap, Image as ImageIcon,
-  Building2, Upload, Info, Cloud, CheckCircle2, Save, Calculator, RefreshCw
+  Building2, Upload, Info, Cloud, CheckCircle2, Save, Calculator, RefreshCw,
+  QrCode, Wallet, ShieldCheck, AlertTriangle
 } from 'lucide-react';
 import { PWAInstallButton } from '../components/PWAInstallButton';
 import { processAndUploadLogo } from '../services/settingsService';
+import { PixKeyType, validatePixKey, formatPixKeyForDisplay, getPixKeyTypeLabel } from '../services/pixService';
 
 const Settings: React.FC = () => {
   const { 
@@ -656,6 +658,200 @@ ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFA
               onChange={e => handleFieldChange('address', e.target.value)}
             />
           </div>
+        </div>
+
+        {/* ==================================================================== */}
+        {/* SEÇÃO: CONFIGURAÇÃO DE RECEBIMENTO VIA PIX (PRINT_3DBR)              */}
+        {/* ==================================================================== */}
+        <div className="pt-6 border-t border-zinc-800 space-y-5">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 flex items-center justify-center">
+                <QrCode className="w-4 h-4" />
+              </div>
+              <div>
+                <h4 className="font-black uppercase text-xs tracking-wider text-zinc-200 flex items-center gap-2">
+                  <span>Dados para Recebimento via Pix</span>
+                  <span className="text-[9px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 font-bold border border-emerald-500/20">
+                    PDF & Vendas
+                  </span>
+                </h4>
+                <p className="text-[11px] text-zinc-400">
+                  Cadastre sua chave uma única vez. Ao selecionar Pix em qualquer pedido, os dados e o QR Code oficial serão gerados no PDF.
+                </p>
+              </div>
+            </div>
+
+            {businessForm.pixKey && businessForm.pixKey.trim() !== '' ? (
+              <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1.5">
+                <CheckCircle2 className="w-3 h-3" /> Chave Pix Ativa no PDF
+              </span>
+            ) : (
+              <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 flex items-center gap-1.5">
+                <AlertTriangle className="w-3 h-3" /> Pix Não Configurado
+              </span>
+            )}
+          </div>
+
+          {/* 1. Seletor do Tipo de Chave Pix */}
+          <div className="space-y-2">
+            <label className="block text-[10px] font-black uppercase text-zinc-400 tracking-wider">
+              1. Tipo de Chave Pix <span className="text-red-400">*</span>
+            </label>
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+              {[
+                { id: 'cpf', label: 'CPF', hint: '11 dígitos' },
+                { id: 'cnpj', label: 'CNPJ', hint: '14 dígitos' },
+                { id: 'email', label: 'E-mail', hint: 'nome@dominio' },
+                { id: 'phone', label: 'Telefone', hint: 'DDD + Número' },
+                { id: 'random', label: 'Aleatória', hint: 'Chave EVP' }
+              ].map(item => {
+                const isSelected = (businessForm.pixKeyType || 'cpf') === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => handleFieldChange('pixKeyType', item.id as PixKeyType)}
+                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                      isSelected
+                        ? 'bg-emerald-500/15 border-emerald-500 text-emerald-300 ring-1 ring-emerald-500/50 shadow-sm'
+                        : 'bg-zinc-800/70 border-zinc-700/80 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
+                    }`}
+                  >
+                    <span className="block font-bold text-xs">{item.label}</span>
+                    <span className="block text-[9px] text-zinc-500 truncate">{item.hint}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* 2. Grid de Campos Pix */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {/* Chave Pix */}
+            <div className="space-y-1.5 sm:col-span-2">
+              <div className="flex items-center justify-between">
+                <label className="block text-[10px] font-black uppercase text-zinc-400 tracking-wider">
+                  2. Chave Pix Completa <span className="text-red-400">*</span>
+                </label>
+                {businessForm.pixKey && (
+                  <span className="text-[10px] font-mono text-emerald-400">
+                    Tipo: {getPixKeyTypeLabel(businessForm.pixKeyType)}
+                  </span>
+                )}
+              </div>
+              <input
+                type="text"
+                placeholder={
+                  (businessForm.pixKeyType === 'cnpj') ? 'Ex: 12.345.678/0001-90 ou 12345678000190' :
+                  (businessForm.pixKeyType === 'email') ? 'Ex: financeiro@print3dbr.com.br' :
+                  (businessForm.pixKeyType === 'phone') ? 'Ex: (11) 98765-4321 ou 11987654321' :
+                  (businessForm.pixKeyType === 'random') ? 'Ex: 123e4567-e89b-12d3-a456-426614174000' :
+                  'Ex: 123.456.789-00 ou 12345678900'
+                }
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm font-mono font-bold text-zinc-100 focus:border-emerald-500 outline-none transition-colors"
+                value={businessForm.pixKey || ''}
+                onChange={e => handleFieldChange('pixKey', e.target.value)}
+              />
+              {businessForm.pixKey && !validatePixKey(businessForm.pixKey, businessForm.pixKeyType || 'cpf').isValid && (
+                <p className="text-[11px] text-amber-400 flex items-center gap-1.5 pt-0.5">
+                  <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                  <span>{validatePixKey(businessForm.pixKey, businessForm.pixKeyType || 'cpf').message}</span>
+                </p>
+              )}
+            </div>
+
+            {/* Nome do Titular */}
+            <div className="space-y-1.5 sm:col-span-2">
+              <label className="block text-[10px] font-black uppercase text-zinc-400 tracking-wider">
+                3. Nome Completo do Titular / Razão Social <span className="text-red-400">*</span>
+              </label>
+              <input
+                type="text"
+                placeholder="Ex: Print_3Dbr Manufatura Digital ou Nome do Empreendedor"
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm font-bold text-zinc-100 focus:border-emerald-500 outline-none transition-colors"
+                value={businessForm.pixReceiverName || ''}
+                onChange={e => handleFieldChange('pixReceiverName', e.target.value)}
+              />
+              <p className="text-[10px] text-zinc-500">
+                Nome da pessoa ou empresa cadastrada na conta bancária para confirmação no app do pagador.
+              </p>
+            </div>
+
+            {/* CPF ou CNPJ do Titular (Opcional) */}
+            <div className="space-y-1.5">
+              <label className="block text-[10px] font-black uppercase text-zinc-500">
+                CPF ou CNPJ do Titular (Opcional)
+              </label>
+              <input
+                type="text"
+                placeholder="Ex: 00.000.000/0001-00"
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm font-bold text-zinc-100 focus:border-emerald-500 outline-none transition-colors"
+                value={businessForm.pixReceiverDoc || ''}
+                onChange={e => handleFieldChange('pixReceiverDoc', e.target.value)}
+              />
+              <p className="text-[10px] text-zinc-500">
+                Exibido no PDF para dar maior segurança e clareza fiscal ao cliente.
+              </p>
+            </div>
+
+            {/* Instituição Financeira / Banco (Opcional) */}
+            <div className="space-y-1.5">
+              <label className="block text-[10px] font-black uppercase text-zinc-500">
+                Instituição Financeira / Banco (Opcional)
+              </label>
+              <input
+                type="text"
+                placeholder="Ex: Nubank, Inter, Itaú, Banco do Brasil, Cora..."
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm font-bold text-zinc-100 focus:border-emerald-500 outline-none transition-colors"
+                value={businessForm.pixBank || ''}
+                onChange={e => handleFieldChange('pixBank', e.target.value)}
+              />
+              <p className="text-[10px] text-zinc-500">
+                Identifica qual banco receberá a transferência.
+              </p>
+            </div>
+          </div>
+
+          {/* Preview Visual dos Dados no Documento */}
+          {businessForm.pixKey && businessForm.pixKey.trim() !== '' && (
+            <div className="bg-zinc-950/80 border border-emerald-500/30 rounded-2xl p-4 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>Prévia da Seção no PDF de Orçamento</span>
+                </span>
+                <span className="text-[9px] font-mono font-bold text-zinc-500 uppercase">
+                  DADOS PARA PAGAMENTO VIA PIX
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-2.5 space-y-0.5">
+                  <span className="text-[9px] font-bold text-zinc-500 uppercase block">Tipo & Chave Pix:</span>
+                  <strong className="text-emerald-400 font-mono text-xs block break-all">
+                    {formatPixKeyForDisplay(businessForm.pixKey, businessForm.pixKeyType || 'cpf')}
+                  </strong>
+                  <span className="text-[9px] text-zinc-400">
+                    Tipo: {getPixKeyTypeLabel(businessForm.pixKeyType)}
+                  </span>
+                </div>
+
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-2.5 space-y-0.5">
+                  <span className="text-[9px] font-bold text-zinc-500 uppercase block">Titular da Conta:</span>
+                  <strong className="text-zinc-100 text-xs block truncate">
+                    {businessForm.pixReceiverName || businessForm.companyName || 'Não informado'}
+                  </strong>
+                  <span className="text-[9px] text-zinc-400 block truncate">
+                    {businessForm.pixBank ? `Banco: ${businessForm.pixBank}` : 'Banco: Não especificado'}
+                    {businessForm.pixReceiverDoc ? ` • Doc: ${businessForm.pixReceiverDoc}` : ''}
+                  </span>
+                </div>
+              </div>
+              <p className="text-[10px] text-zinc-400 leading-relaxed pt-1">
+                ℹ️ <strong>QR Code Padrão BACEN:</strong> O QR Code será gerado com o valor exato de cada pedido e inserido automaticamente no PDF apenas quando a forma de pagamento for Pix.
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Botão de Salvar e Sincronizar */}

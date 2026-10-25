@@ -42,7 +42,13 @@ export const DEFAULT_SETTINGS: Settings = {
     website: '',
     cityState: '',
     address: '',
-    logoUrl: ''
+    logoUrl: '',
+    pixKeyType: 'cpf',
+    pixKey: '',
+    pixReceiverName: '',
+    pixReceiverDoc: '',
+    pixBank: '',
+    pixCity: ''
   },
   defaultPackagingCost: 2.50,
   defaultOtherCosts: 0.00,
