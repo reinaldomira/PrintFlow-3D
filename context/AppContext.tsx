@@ -269,11 +269,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       if (customersRes.success && customersRes.data !== null) setCustomersState(customersRes.data);
       if (ordersRes.success && ordersRes.data !== null) {
+        let cachedPaymentStatuses: Record<string, any> = {};
+        try {
+          const stored = localStorage.getItem('printflow_orders_payment_status');
+          if (stored) cachedPaymentStatuses = JSON.parse(stored);
+        } catch (e) {}
+
         const normalizedOrders = (ordersRes.data || []).map((row: any) => {
           const pm = row.paymentMethod || row.payment_method || (row.payments && row.payments[0]?.method) || PaymentMethod.PIX;
           const cid = row.customerId || row.customer_id || '';
           const tv = typeof row.totalValue === 'number' ? row.totalValue : (Number(row.total_value) || 0);
           const ca = row.createdAt || row.created_at || new Date().toISOString();
+
+          // Resolução de pagamento resiliente (tabela, JSONB de items ou cache local)
+          const firstItem = Array.isArray(row.items) && row.items[0] ? row.items[0] : null;
+          const localPayment = cachedPaymentStatuses[row.id];
+
+          const isPaid = row.isPaid ?? row.is_paid ?? firstItem?._isPaid ?? localPayment?.isPaid;
+          const paymentStatus = row.paymentStatus ?? row.payment_status ?? firstItem?._paymentStatus ?? localPayment?.paymentStatus;
+          const payments = (Array.isArray(row.payments) && row.payments.length > 0)
+            ? row.payments
+            : (firstItem?._payments || localPayment?.payments || []);
+
           return {
             ...row,
             paymentMethod: pm,
@@ -283,7 +300,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             totalValue: tv,
             total_value: tv,
             createdAt: ca,
-            created_at: ca
+            created_at: ca,
+            isPaid,
+            paymentStatus,
+            payments
           };
         });
         setOrdersState(normalizedOrders);

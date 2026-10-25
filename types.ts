@@ -160,6 +160,8 @@ export interface Order {
   payments: Payment[];
   paymentMethod: PaymentMethod;
   payment_method?: string | PaymentMethod;
+  paymentStatus?: 'PENDING' | 'PAID' | 'PARTIAL';
+  isPaid?: boolean;
   createdAt: string;
   created_at?: string;
   custosFinanceiros?: FinancialConfig;

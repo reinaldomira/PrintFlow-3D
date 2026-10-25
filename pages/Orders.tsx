@@ -4,7 +4,7 @@ import { useApp } from '../context/AppContext';
 import { Order, OrderStatus, PaymentMethod, OrderItem, Customer, FinancialConfig, PricingBreakdown } from '../types';
 import { supabase } from '../services/supabase';
 import { formatCurrency, calculatePartCosts } from '../constants';
-import { STATUS_LIST, getStatusConfig, normalizeOrderStatus, isOrderActive } from '../utils/statusUtils';
+import { STATUS_LIST, getStatusConfig, normalizeOrderStatus, isOrderActive, isOrderPaid } from '../utils/statusUtils';
 import { calculateSalePrice } from '../utils/pricingCalculator';
 import { 
   Plus, Search, Trash2, ShoppingBag, X, User as UserIcon, Minus, 
@@ -154,12 +154,14 @@ export const Orders: React.FC = () => {
     discount: number;
     paymentMethod: PaymentMethod;
     status: OrderStatus;
+    isPaid: boolean;
   }>({
     customerId: '',
     items: [],
     discount: 0,
     paymentMethod: PaymentMethod.PIX,
-    status: OrderStatus.QUEUE
+    status: OrderStatus.QUEUE,
+    isPaid: false
   });
 
   // Configurações Financeiras Avançadas da Venda Atual (pricingCalculator)
@@ -215,7 +217,8 @@ export const Orders: React.FC = () => {
         items: [],
         discount: 0,
         paymentMethod: PaymentMethod.PIX,
-        status: OrderStatus.QUEUE
+        status: OrderStatus.QUEUE,
+        isPaid: false
       });
       setIsQuickCustomerOpen(false);
       setIsCustomItemOpen(false);
@@ -319,7 +322,8 @@ export const Orders: React.FC = () => {
       items: [],
       discount: 0,
       paymentMethod: PaymentMethod.PIX,
-      status: OrderStatus.QUEUE
+      status: OrderStatus.QUEUE,
+      isPaid: false
     });
   };
 
@@ -351,7 +355,8 @@ export const Orders: React.FC = () => {
       items: [],
       discount: 0,
       paymentMethod: PaymentMethod.PIX,
-      status: OrderStatus.QUEUE
+      status: OrderStatus.QUEUE,
+      isPaid: false
     });
     setFinancialForm({
       embalagem: settings.defaultPackagingCost ?? 2.50,
@@ -381,7 +386,8 @@ export const Orders: React.FC = () => {
         : (resolvedPm === 'Cartão' || resolvedPm === PaymentMethod.CARD)
         ? PaymentMethod.CARD
         : PaymentMethod.CASH,
-      status: normalizeOrderStatus(order.status)
+      status: normalizeOrderStatus(order.status),
+      isPaid: isOrderPaid(order)
     });
     if (order.custosFinanceiros) {
       setFinancialForm({ ...order.custosFinanceiros });
@@ -479,10 +485,13 @@ export const Orders: React.FC = () => {
       };
 
       // Backup de redundância: persiste o snapshot também dentro do primeiro item JSONB
-      // garantindo que bancos legados sem a coluna consumedFilaments preservem os dados
+      // garantindo que bancos legados sem as colunas consumedFilaments, payments ou paymentStatus preservem os dados
       if (payloadWithStock.items && payloadWithStock.items.length > 0) {
         payloadWithStock.items[0]._consumedFilaments = consumedMap;
         payloadWithStock.items[0]._stockStatus = stockStatus;
+        payloadWithStock.items[0]._isPaid = fullPayload.isPaid;
+        payloadWithStock.items[0]._paymentStatus = fullPayload.paymentStatus;
+        payloadWithStock.items[0]._payments = fullPayload.payments;
       }
 
       const executeSave = async (dataToSave: any) => {
@@ -496,7 +505,7 @@ export const Orders: React.FC = () => {
       let saveResult = await executeSave(payloadWithStock);
 
       // Se falhar devido a coluna ausente (PGRST204) no PostgREST cache, aplica fallback dinâmico
-      if (saveResult.error && (saveResult.error.code === 'PGRST204' || saveResult.error.message?.includes('column'))) {
+      if (saveResult.error && (saveResult.error.code === 'PGRST204' || saveResult.error.message?.includes('column') || saveResult.error.message?.includes('schema cache'))) {
         console.warn('Detectada coluna ausente em orders no Supabase, aplicando fallback resiliente:', saveResult.error.message);
         const retryPayload = { ...payloadWithStock };
 
@@ -514,8 +523,16 @@ export const Orders: React.FC = () => {
         if (saveResult.error.message?.includes('discount')) {
           delete retryPayload.discount;
         }
-        if (saveResult.error.message?.includes('paymentMethod')) {
+        if (saveResult.error.message?.includes('paymentMethod') || saveResult.error.message?.includes('payment_method')) {
           delete retryPayload.paymentMethod;
+        }
+        if (saveResult.error.message?.includes('paymentStatus') || saveResult.error.message?.includes('payment_status')) {
+          delete retryPayload.paymentStatus;
+          delete retryPayload.payment_status;
+        }
+        if (saveResult.error.message?.includes('isPaid') || saveResult.error.message?.includes('is_paid')) {
+          delete retryPayload.isPaid;
+          delete retryPayload.is_paid;
         }
         if (saveResult.error.message?.includes('payments')) {
           delete retryPayload.payments;
@@ -524,9 +541,18 @@ export const Orders: React.FC = () => {
         saveResult = await executeSave(retryPayload);
 
         // Se ainda falhar com outro campo não suportado, salva com o payload essencial garantido
-        if (saveResult.error && (saveResult.error.code === 'PGRST204' || saveResult.error.message?.includes('column'))) {
+        if (saveResult.error && (saveResult.error.code === 'PGRST204' || saveResult.error.message?.includes('column') || saveResult.error.message?.includes('schema cache'))) {
           console.warn('Salvando com payload mínimo garantido:', saveResult.error.message);
-          saveResult = await executeSave(basePayload);
+          const safeMinPayload = {
+            customerId: basePayload.customerId || null,
+            customer_id: basePayload.customerId || null,
+            items: payloadWithStock.items,
+            totalValue: basePayload.totalValue,
+            total_value: basePayload.total_value,
+            status: basePayload.status,
+            user_id: user.id
+          };
+          saveResult = await executeSave(safeMinPayload);
         }
       }
 
@@ -587,6 +613,8 @@ export const Orders: React.FC = () => {
     }));
 
     const chosenMethod = orderForm.paymentMethod || PaymentMethod.PIX;
+    const isPaid = Boolean(orderForm.isPaid);
+    const paymentStatus = isPaid ? 'PAID' : 'PENDING';
 
     const basePayload: any = {
       customerId: safeCustomerId,
@@ -597,6 +625,10 @@ export const Orders: React.FC = () => {
       status: orderForm.status || OrderStatus.QUEUE,
       paymentMethod: chosenMethod,
       payment_method: chosenMethod,
+      paymentStatus: paymentStatus,
+      payment_status: paymentStatus,
+      isPaid: isPaid,
+      is_paid: isPaid,
       discount: Number(orderForm.discount) || 0,
       user_id: user.id
     };
@@ -611,16 +643,20 @@ export const Orders: React.FC = () => {
       discount: Number(orderForm.discount) || 0,
       paymentMethod: chosenMethod,
       payment_method: chosenMethod,
+      paymentStatus: paymentStatus,
+      payment_status: paymentStatus,
+      isPaid: isPaid,
+      is_paid: isPaid,
       custosFinanceiros: financialForm,
       custos_financeiros: financialForm,
       detalhesPrecificacao: pricingBreakdown,
       detalhes_precificacao: pricingBreakdown,
-      payments: [{
+      payments: isPaid ? [{
         id: Math.random().toString(36).substring(2, 9),
         amount: Number(orderTotal) || 0,
         date: new Date().toISOString(),
         method: chosenMethod
-      }]
+      }] : []
     };
 
     // Calcula o consumo de filamento necessário para este pedido
@@ -1162,6 +1198,97 @@ export const Orders: React.FC = () => {
     }
   };
 
+  const handleTogglePaymentStatus = async (order: Order, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const currentlyPaid = isOrderPaid(order);
+    const newPaid = !currentlyPaid;
+    const chosenMethod = order.paymentMethod || (order as any).payment_method || (order.payments && order.payments[0]?.method) || PaymentMethod.PIX;
+    const orderTotal = Number(order.totalValue ?? (order as any).total_value ?? 0);
+
+    const updatedPayments = newPaid ? [{
+      id: Math.random().toString(36).substring(2, 9),
+      amount: orderTotal,
+      date: new Date().toISOString(),
+      method: chosenMethod
+    }] : [];
+
+    // Clona e atualiza items com o snapshot de pagamento embutido (redundância JSONB universal)
+    const currentItems = Array.isArray(order.items) && order.items.length > 0
+      ? order.items.map((it, idx) => {
+          if (idx === 0) {
+            return {
+              ...it,
+              _isPaid: newPaid,
+              _paymentStatus: newPaid ? 'PAID' : 'PENDING',
+              _payments: updatedPayments
+            };
+          }
+          return { ...it };
+        })
+      : [{
+          partId: 'general_order',
+          name: 'Item do Pedido',
+          quantity: 1,
+          unitPrice: orderTotal,
+          _isPaid: newPaid,
+          _paymentStatus: newPaid ? 'PAID' : 'PENDING',
+          _payments: updatedPayments
+        }];
+
+    // 1. Atualização otimista imediata na UI
+    setOrders(prev => prev.map(o => {
+      if (o.id !== order.id) return o;
+      return {
+        ...o,
+        items: updatedItems,
+        isPaid: newPaid,
+        paymentStatus: newPaid ? 'PAID' : 'PENDING',
+        payments: updatedPayments
+      };
+    }));
+
+    // 2. Cache local resiliente por ID do pedido
+    try {
+      const stored = localStorage.getItem('printflow_orders_payment_status');
+      const parsed = stored ? JSON.parse(stored) : {};
+      parsed[order.id] = {
+        isPaid: newPaid,
+        paymentStatus: newPaid ? 'PAID' : 'PENDING',
+        payments: updatedPayments,
+        updatedAt: new Date().toISOString()
+      };
+      localStorage.setItem('printflow_orders_payment_status', JSON.stringify(parsed));
+    } catch (err) {}
+
+    // 3. Atualização no Supabase: atualiza a coluna 'items' (que armazena _isPaid e _payments no JSONB)
+    try {
+      const { error } = await supabase
+        .from('orders')
+        .update({ items: updatedItems })
+        .eq('id', order.id);
+
+      if (error) {
+        throw new Error(error.message || 'Falha ao atualizar pedido no Supabase');
+      }
+
+      setPageNotice({
+        type: 'success',
+        message: newPaid 
+          ? `Pagamento do pedido #${order.id.slice(0, 5).toUpperCase()} confirmado com sucesso! Lançado no faturamento em caixa.`
+          : `Pedido #${order.id.slice(0, 5).toUpperCase()} marcado como "Aguardando Pagamento". Removido do faturamento realizado.`
+      });
+      setTimeout(() => setPageNotice(null), 4000);
+      await refreshData();
+    } catch (err: any) {
+      console.error('Erro ao alternar pagamento:', err);
+      await refreshData();
+      setPageNotice({
+        type: 'error',
+        message: 'Erro ao alterar status de pagamento: ' + (err.message || 'Falha de comunicação.')
+      });
+    }
+  };
+
   const getStatusColor = (status: OrderStatus | string) => {
     return getStatusConfig(status).badgeClass;
   };
@@ -1283,6 +1410,7 @@ export const Orders: React.FC = () => {
             const customer = customers.find(c => c.id === order.customerId);
             const isExpanded = expandedOrders[order.id];
             const totalItemsCount = (order.items || []).reduce((s, i) => s + (i.quantity || 1), 0);
+            const isPaid = isOrderPaid(order);
 
             return (
               <div key={order.id} className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden shadow-sm transition-all hover:border-zinc-700">
@@ -1300,6 +1428,31 @@ export const Orders: React.FC = () => {
                         <span className="text-[10px] px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400 font-mono">
                           {order.paymentMethod || 'Pix'}
                         </span>
+                        
+                        {/* Botão de Status de Pagamento (1 clique para alternar) */}
+                        <button
+                          type="button"
+                          onClick={(e) => handleTogglePaymentStatus(order, e)}
+                          title={isPaid ? "Pagamento Confirmado (Em Caixa). Clique para marcar como Aguardando." : "Aguardando Pagamento do Cliente (A Receber). Clique para confirmar recebimento."}
+                          className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border flex items-center gap-1 transition-all active:scale-95 ${
+                            isPaid
+                              ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/25'
+                              : 'bg-amber-500/15 text-amber-300 border-amber-500/30 hover:bg-emerald-500/20 hover:text-emerald-300 hover:border-emerald-500/40'
+                          }`}
+                        >
+                          {isPaid ? (
+                            <>
+                              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                              <span>Pago</span>
+                            </>
+                          ) : (
+                            <>
+                              <Clock className="w-3 h-3 text-amber-400" />
+                              <span>Aguardando Pagamento</span>
+                            </>
+                          )}
+                        </button>
+
                         <span className="text-[10px] font-bold text-zinc-500 uppercase">
                           #{order.id.slice(0, 5)}
                         </span>
@@ -1319,6 +1472,9 @@ export const Orders: React.FC = () => {
                         </p>
                       )}
                       <span className="text-xl font-black text-emerald-500">{formatCurrency(order.totalValue)}</span>
+                      <p className={`text-[10px] font-bold mt-0.5 flex items-center justify-end gap-1 ${isPaid ? 'text-emerald-400' : 'text-amber-400'}`}>
+                        {isPaid ? '✓ Em Caixa' : '⏳ A Receber'}
+                      </p>
                     </div>
 
                     {/* Mudança de Status Rápida com emojis e labels de fábrica */}
@@ -2010,6 +2166,50 @@ export const Orders: React.FC = () => {
                       value={orderForm.discount || ''}
                       onChange={e => setOrderForm({ ...orderForm, discount: Math.max(0, Number(e.target.value) || 0) })}
                     />
+                  </div>
+                </div>
+
+                {/* Seleção da Situação do Pagamento (Regime de Caixa) */}
+                <div className="col-span-1 sm:col-span-2 p-3.5 bg-zinc-900/90 border border-zinc-800 rounded-2xl space-y-2.5">
+                  <div className="flex items-center justify-between flex-wrap gap-1">
+                    <label className="text-xs font-black uppercase text-zinc-300 tracking-wider flex items-center gap-1.5">
+                      <DollarSign className="w-4 h-4 text-emerald-400" />
+                      <span>Situação do Pagamento (Regime de Caixa)</span>
+                    </label>
+                    <span className="text-[10px] text-zinc-500 font-medium">Lançamento em faturamento condicionado ao pagamento</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setOrderForm(prev => ({ ...prev, isPaid: false }))}
+                      className={`p-3 rounded-xl border text-left flex items-start gap-3 transition-all ${
+                        !orderForm.isPaid
+                          ? 'bg-amber-500/15 border-amber-500/60 text-amber-300 ring-2 ring-amber-500/30'
+                          : 'bg-zinc-800/40 border-zinc-800 text-zinc-400 hover:bg-zinc-800'
+                      }`}
+                    >
+                      <Clock className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-xs font-bold leading-tight">⏳ Aguardando Pagamento (A Receber)</p>
+                        <p className="text-[10px] text-zinc-400 mt-1">O valor ficará registrado como a receber e não inflará o faturamento realizado até a quitação.</p>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setOrderForm(prev => ({ ...prev, isPaid: true }))}
+                      className={`p-3 rounded-xl border text-left flex items-start gap-3 transition-all ${
+                        orderForm.isPaid
+                          ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300 ring-2 ring-emerald-500/30'
+                          : 'bg-zinc-800/40 border-zinc-800 text-zinc-400 hover:bg-zinc-800'
+                      }`}
+                    >
+                      <CheckCircle2 className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-xs font-bold leading-tight">✅ Pagamento Confirmado (Em Caixa)</p>
+                        <p className="text-[10px] text-zinc-400 mt-1">Cliente já pagou. O valor entra de imediato no Faturamento Realizado do período.</p>
+                      </div>
+                    </button>
                   </div>
                 </div>
               </div>

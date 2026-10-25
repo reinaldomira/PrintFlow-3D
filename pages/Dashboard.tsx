@@ -14,6 +14,7 @@ import {
   ArrowUpRight, CheckCircle2, PackageCheck
 } from 'lucide-react';
 import { OrderStatus, PrintFailure, DashboardCardConfig } from '../types';
+import { normalizeOrderStatus, isOrderPaid } from '../utils/statusUtils';
 
 const FAILURE_REASONS = [
   'Descolamento da mesa (Warping)',
@@ -250,9 +251,12 @@ export const Dashboard: React.FC = () => {
     });
   }, [orders, viewDate]);
 
-  // Statistics calculation with realistic fallback if database is empty for this month
+  // Statistics calculation with Cash Basis (Regime de Caixa)
   const stats = useMemo(() => {
-    let revenue = 0;
+    let realizedRevenue = 0;
+    let pendingRevenue = 0;
+    let paidOrdersCount = 0;
+    let pendingOrdersCount = 0;
     let totalCost = 0;
     let pieces = 0;
     let filamentCostTotal = 0;
@@ -261,7 +265,20 @@ export const Dashboard: React.FC = () => {
     let extrasCostTotal = 0;
 
     filteredOrders.forEach(order => {
-      revenue += order.totalValue;
+      const normStatus = normalizeOrderStatus(order.status);
+      if (normStatus === OrderStatus.CANCELLED) return; // Pedidos cancelados nunca entram em faturamento
+
+      const isPaid = isOrderPaid(order);
+      const val = Number(order.totalValue) || 0;
+
+      if (isPaid) {
+        realizedRevenue += val;
+        paidOrdersCount++;
+      } else {
+        pendingRevenue += val;
+        pendingOrdersCount++;
+      }
+
       (order.items || []).forEach(item => {
         pieces += item.quantity;
         const part = parts.find(p => p.id === item.partId);
@@ -286,11 +303,17 @@ export const Dashboard: React.FC = () => {
     extrasCostTotal += totalFailuresCost;
     totalCost += totalFailuresCost;
 
-    const netProfit = Math.max(0, revenue - totalCost);
-    const margin = revenue > 0 ? (netProfit / revenue) * 100 : 0;
+    // Regime de Caixa: lucro baseado no faturamento efetivamente realizado/recebido
+    const netProfit = Math.max(0, realizedRevenue - totalCost);
+    const margin = realizedRevenue > 0 ? (netProfit / realizedRevenue) * 100 : 0;
 
     return {
-      revenue,
+      revenue: realizedRevenue,
+      realizedRevenue,
+      pendingRevenue,
+      paidOrdersCount,
+      pendingOrdersCount,
+      totalOrderValue: realizedRevenue + pendingRevenue,
       profit: netProfit,
       productionCost: totalCost,
       pieces,
@@ -301,7 +324,7 @@ export const Dashboard: React.FC = () => {
       marginPercent: Math.round(margin),
       isDemo: false
     };
-  }, [filteredOrders, orders, parts, filaments, printers, supplies, settings, failures]);
+  }, [filteredOrders, parts, filaments, printers, supplies, settings, failures]);
 
   // Filament Inventory Overview widget data
   const filamentInventoryStats = useMemo(() => {
@@ -372,10 +395,13 @@ export const Dashboard: React.FC = () => {
 
   // Production Pipeline / Kanban breakdown
   const pipeline = useMemo(() => {
-    const pendingQuotes = orders.filter(o => (o.payments || []).length === 0 && o.status !== OrderStatus.DELIVERED);
-    const inProduction = orders.filter(o => o.status === OrderStatus.PRODUCTION);
-    const readyToShip = orders.filter(o => o.status === OrderStatus.READY);
-    const inTransit = orders.filter(o => o.status === OrderStatus.DELIVERED);
+    const pendingQuotes = orders.filter(o => !isOrderPaid(o) && normalizeOrderStatus(o.status) !== OrderStatus.CANCELLED && normalizeOrderStatus(o.status) !== OrderStatus.DELIVERED);
+    const inProduction = orders.filter(o => {
+      const s = normalizeOrderStatus(o.status);
+      return s === OrderStatus.PRINTING || s === OrderStatus.FINISHING || s === OrderStatus.QUEUE;
+    });
+    const readyToShip = orders.filter(o => normalizeOrderStatus(o.status) === OrderStatus.READY);
+    const inTransit = orders.filter(o => normalizeOrderStatus(o.status) === OrderStatus.DELIVERED);
 
     return {
       pendingQuotes,
@@ -385,7 +411,7 @@ export const Dashboard: React.FC = () => {
     };
   }, [orders]);
 
-  // Evolução do Lucro (Chart data) - Dinâmico para os 4 meses terminando no mês selecionado
+  // Evolução do Lucro (Chart data) - Dinâmico para os 4 meses terminando no mês selecionado (Regime de Caixa)
   const profitEvolutionData = useMemo(() => {
     const result = [];
     const currentViewYear = viewDate.getFullYear();
@@ -406,6 +432,8 @@ export const Dashboard: React.FC = () => {
       let monthProfit = 0;
       if (monthOrders.length > 0) {
         monthOrders.forEach(o => {
+          if (normalizeOrderStatus(o.status) === OrderStatus.CANCELLED) return;
+          if (!isOrderPaid(o)) return; // Apenas pedidos quitados entram no lucro realizado
           let orderCost = 0;
           (o.items || []).forEach(item => {
             const part = parts.find(p => p.id === item.partId);
@@ -443,11 +471,13 @@ export const Dashboard: React.FC = () => {
     ];
   }, [stats]);
 
-  // Top Products calculation
+  // Top Products calculation (Base Caixa)
   const topProducts = useMemo(() => {
     const productRevenue: Record<string, { name: string; revenue: number; qty: number }> = {};
 
     filteredOrders.forEach(order => {
+      if (normalizeOrderStatus(order.status) === OrderStatus.CANCELLED) return;
+      if (!isOrderPaid(order)) return; // Apenas produtos de vendas efetivamente pagas
       (order.items || []).forEach(item => {
         const part = parts.find(p => p.id === item.partId);
         const name = item.name || part?.name || 'Peça Personalizada';
@@ -468,7 +498,7 @@ export const Dashboard: React.FC = () => {
     return Math.max(...topProducts.map(p => p.revenue), 1);
   }, [topProducts]);
 
-  // Sales by Channel
+  // Sales by Channel (Base Caixa)
   const salesByChannelData = useMemo(() => {
     let direct = 0;
     let ml = 0;
@@ -476,6 +506,8 @@ export const Dashboard: React.FC = () => {
     let insta = 0;
 
     filteredOrders.forEach(o => {
+      if (normalizeOrderStatus(o.status) === OrderStatus.CANCELLED) return;
+      if (!isOrderPaid(o)) return; // Apenas receitas liquidadas
       const method = (o.paymentMethod || '').toLowerCase();
       if (method.includes('pix') || method.includes('dinheiro')) {
         direct += o.totalValue;
@@ -603,22 +635,29 @@ export const Dashboard: React.FC = () => {
               <span className="text-[11px] text-slate-500 font-mono">Consolidado ({monthLabel})</span>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              {/* Card 1: Faturamento Total */}
+              {/* Card 1: Faturamento Realizado (Em Caixa) */}
               <div className="bg-[#121927] border border-[#1e2a42] rounded-2xl p-5 flex items-center justify-between shadow-lg shadow-black/20 hover:border-emerald-500/40 transition-all group">
                 <div>
                   <div className="flex items-center gap-1.5 mb-1.5">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
                     <p className="text-slate-400 text-[10px] uppercase font-bold tracking-wider">
-                      FATURAMENTO TOTAL
+                      FATURAMENTO REALIZADO (CAIXA)
                     </p>
                   </div>
                   <p className="text-2xl font-black text-emerald-400 font-mono tracking-tight">
-                    {formatCurrency(stats.revenue)}
+                    {formatCurrency(stats.realizedRevenue)}
                   </p>
-                  <p className="text-[11px] text-slate-500 mt-1 flex items-center gap-1">
-                    <ArrowUpRight className="w-3 h-3 text-emerald-400" />
-                    <span>Período selecionado</span>
-                  </p>
+                  {stats.pendingRevenue > 0 ? (
+                    <p className="text-[11px] text-amber-400 mt-1 flex items-center gap-1 font-semibold">
+                      <Clock className="w-3 h-3 text-amber-400 flex-shrink-0" />
+                      <span>+ {formatCurrency(stats.pendingRevenue)} a receber ({stats.pendingOrdersCount} {stats.pendingOrdersCount === 1 ? 'pendente' : 'pendentes'})</span>
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-slate-500 mt-1 flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3 text-emerald-400 flex-shrink-0" />
+                      <span>100% recebido no período</span>
+                    </p>
+                  )}
                 </div>
                 <div className="w-11 h-11 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 text-xl font-bold shadow-inner group-hover:scale-105 transition-transform">
                   $
@@ -638,7 +677,7 @@ export const Dashboard: React.FC = () => {
                     {formatCurrency(stats.profit)}
                   </p>
                   <p className="text-[11px] text-slate-500 mt-1">
-                    Margem real: <span className="text-cyan-300 font-semibold">{stats.marginPercent}%</span>
+                    Margem real: <span className="text-cyan-300 font-semibold">{stats.marginPercent}%</span> • Base Caixa
                   </p>
                 </div>
                 <div className="w-11 h-11 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400 shadow-inner group-hover:scale-105 transition-transform">
