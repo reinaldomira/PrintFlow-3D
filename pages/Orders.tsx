@@ -11,11 +11,12 @@ import {
   ChevronDown, ChevronUp, Package, Tag, Loader2, CreditCard, Banknote, 
   QrCode, MessageCircle, Printer as PrinterIcon, Edit2, CheckCircle2, UserPlus, 
   Wrench, AlertCircle, FileText, Calculator, TrendingUp, SlidersHorizontal, 
-  AlertTriangle, Percent, DollarSign, Clock, ShieldAlert, Sparkles, Check, RotateCcw
+  AlertTriangle, Percent, DollarSign, Clock, ShieldAlert, Sparkles, Check, RotateCcw, Zap
 } from 'lucide-react';
 import { QuotePdfModal } from '../components/QuotePdfModal';
 import { PricingCalculatorModal } from '../components/PricingCalculatorModal';
 import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
+import { QuickQuoteModal } from '../components/QuickQuoteModal';
 
 export interface StockPreviewRow {
   filamentId: string;
@@ -95,6 +96,7 @@ export const Orders: React.FC = () => {
   const { orders, setOrders, refreshData, customers, parts, filaments, printers, settings, user } = useApp();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isPricingCalculatorOpen, setIsPricingCalculatorOpen] = useState(false);
+  const [isQuickQuoteOpen, setIsQuickQuoteOpen] = useState(false);
   const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<OrderStatus | 'All'>('All');
@@ -206,9 +208,31 @@ export const Orders: React.FC = () => {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [isModalOpen, orderForm.items]);
 
-  // Abrir modal de novo pedido automaticamente se veio da tela de Clientes
+  // Abrir modal de novo pedido automaticamente se veio da tela de Clientes ou do Orçamento Flash
   useEffect(() => {
-    const state = location.state as { customerId?: string; openNew?: boolean } | null;
+    const state = location.state as { 
+      customerId?: string; 
+      openNew?: boolean;
+      flashQuoteDraft?: {
+        itemName: string;
+        unitPrice: number;
+        quantity: number;
+        weightGrams: number;
+        filamentId?: string;
+        filamentName?: string;
+        printHours?: number;
+        customerName?: string;
+        customerPhone?: string;
+      };
+    } | null;
+
+    if (state?.flashQuoteDraft) {
+      const draft = state.flashQuoteDraft;
+      handleConvertFlashQuote(draft);
+      window.history.replaceState({}, document.title);
+      return;
+    }
+
     if (state?.openNew && state?.customerId) {
       setEditingOrderId(null);
       setFormError(null);
@@ -226,6 +250,48 @@ export const Orders: React.FC = () => {
       window.history.replaceState({}, document.title);
     }
   }, [location.state]);
+
+  const handleConvertFlashQuote = (draft: {
+    itemName: string;
+    unitPrice: number;
+    quantity: number;
+    weightGrams: number;
+    filamentId?: string;
+    filamentName?: string;
+    printHours?: number;
+    customerName?: string;
+    customerPhone?: string;
+  }) => {
+    setEditingOrderId(null);
+    setFormError(null);
+
+    const matchedCust = customers.find(c => 
+      draft.customerName && c.name.toLowerCase().includes(draft.customerName.toLowerCase())
+    );
+
+    const newItem: OrderItem = {
+      partId: draft.filamentId ? `custom_${draft.filamentId}_${Date.now()}` : `custom_${Date.now()}`,
+      name: `${draft.itemName}${draft.filamentName ? ` (${draft.filamentName})` : ''}`,
+      quantity: Math.max(1, draft.quantity || 1),
+      unitPrice: Math.max(0, draft.unitPrice || 0)
+    };
+
+    setOrderForm({
+      customerId: matchedCust?.id || customers[0]?.id || '',
+      items: [newItem],
+      discount: 0,
+      paymentMethod: PaymentMethod.PIX,
+      status: OrderStatus.QUEUE,
+      isPaid: false
+    });
+    setIsQuickCustomerOpen(false);
+    setIsCustomItemOpen(false);
+    setIsModalOpen(true);
+    setPageNotice({
+      type: 'success',
+      message: `Orçamento Flash "${draft.itemName}" convertido em rascunho de pedido! Revise e confirme.`
+    });
+  };
 
   const toggleExpand = (id: string) => {
     setExpandedOrders(prev => ({ ...prev, [id]: !prev[id] }));
@@ -1301,6 +1367,16 @@ export const Orders: React.FC = () => {
           <p className="text-zinc-500">Gestão de vendas, encomendas e status de entrega</p>
         </div>
         <div className="flex items-center gap-2.5">
+          <button 
+            type="button"
+            onClick={() => setIsQuickQuoteOpen(true)} 
+            className="bg-gradient-to-r from-emerald-500/20 to-teal-500/20 hover:from-emerald-500/30 hover:to-teal-500/30 text-emerald-300 border border-emerald-500/40 px-3.5 py-2.5 rounded-xl flex items-center gap-2 font-bold text-sm shadow-sm transition active:scale-95"
+            title="Simular Orçamento Flash para WhatsApp em segundos"
+          >
+            <Zap className="w-4 h-4 text-emerald-400 fill-emerald-400" />
+            <span className="hidden sm:inline">Orçamento Flash</span>
+            <span className="sm:hidden">Flash</span>
+          </button>
           <button 
             type="button"
             onClick={() => setIsPricingCalculatorOpen(true)} 
@@ -3007,6 +3083,13 @@ export const Orders: React.FC = () => {
           setTimeout(() => setPageNotice(null), 3500);
         }}
         onClose={() => setCancelPromptOrder(null)}
+      />
+
+      {/* Modal do Simulador de Orçamento Flash WhatsApp */}
+      <QuickQuoteModal
+        isOpen={isQuickQuoteOpen}
+        onClose={() => setIsQuickQuoteOpen(false)}
+        onConvertToOrder={handleConvertFlashQuote}
       />
     </div>
   );

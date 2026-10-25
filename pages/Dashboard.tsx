@@ -11,9 +11,10 @@ import {
   Clock, Truck, FileText, ChevronLeft, ChevronRight, DollarSign, Monitor, 
   X, Plus, Bell, ArrowRight, Database, Trash2, Settings2, GripVertical,
   Eye, EyeOff, ChevronUp, ChevronDown, RotateCcw, Droplets, Layers,
-  ArrowUpRight, CheckCircle2, PackageCheck
+  ArrowUpRight, CheckCircle2, PackageCheck, Wallet, ArrowDownRight,
+  Receipt, ShoppingBag, Zap, Wrench, Sparkles, Building2
 } from 'lucide-react';
-import { OrderStatus, PrintFailure, DashboardCardConfig } from '../types';
+import { OrderStatus, PrintFailure, DashboardCardConfig, CashExpense } from '../types';
 import { normalizeOrderStatus, isOrderPaid } from '../utils/statusUtils';
 
 const FAILURE_REASONS = [
@@ -26,19 +27,39 @@ const FAILURE_REASONS = [
   'Outro'
 ];
 
+export const EXPENSE_CATEGORIES: { id: CashExpense['category']; label: string; icon: string }[] = [
+  { id: 'energia', label: 'Energia Elétrica / Luz', icon: '⚡' },
+  { id: 'manutencao', label: 'Manutenção & Peças de Reposição', icon: '🔧' },
+  { id: 'limpeza_insumos', label: 'Álcool, Adesivos & Limpeza', icon: '🧴' },
+  { id: 'frete', label: 'Frete, Correios & Embalagens', icon: '📦' },
+  { id: 'ferramentas', label: 'Ferramentas, Alicates & Bicos', icon: '🛠️' },
+  { id: 'aluguel_fixo', label: 'Aluguel / Custos Fixos', icon: '🏢' },
+  { id: 'outros', label: 'Outras Despesas Operacionais', icon: '🏷️' }
+];
+
+export const EXPENSE_PRESETS = [
+  { desc: 'Conta de Energia Elétrica', category: 'energia' as const, icon: '⚡' },
+  { desc: 'Álcool Isopropílico 99.8% (1L)', category: 'limpeza_insumos' as const, icon: '🧴' },
+  { desc: 'Kit de Bicos 0.4mm / Hotend', category: 'manutencao' as const, icon: '🔧' },
+  { desc: 'Caixas de Envio & Fitas', category: 'frete' as const, icon: '📦' },
+  { desc: 'Spray Adesivo / Cola Bastão', category: 'limpeza_insumos' as const, icon: '🧪' },
+  { desc: 'Peça de Reposição / Correia GT2', category: 'manutencao' as const, icon: '⚙️' }
+];
+
 const INITIAL_FAILURES: PrintFailure[] = [];
 
 export const DEFAULT_DASHBOARD_CARDS: DashboardCardConfig[] = [
   { id: 'kpi_strip', title: 'Indicadores Chave (Faturamento, Lucro, Custos, Lotes)', category: 'kpi', visible: true, order: 0 },
-  { id: 'pipeline_strip', title: 'Funil de Produção & Entregas', category: 'pipeline', visible: true, order: 1 },
-  { id: 'widget_filament_stock', title: 'Panorama do Estoque de Filamentos', category: 'widgets', visible: true, order: 2 },
-  { id: 'widget_supplies_stock', title: 'Estoque de Insumos & Componentes', category: 'widgets', visible: true, order: 3 },
-  { id: 'chart_profit_evolution', title: 'Evolução do Lucro Líquido', category: 'charts', visible: true, order: 4 },
-  { id: 'chart_cost_breakdown', title: 'Composição dos Custos de Produção', category: 'charts', visible: true, order: 5 },
-  { id: 'list_top_products', title: 'Top Produtos em Faturamento', category: 'lists', visible: true, order: 6 },
-  { id: 'chart_sales_channel', title: 'Distribuição de Vendas por Canal', category: 'charts', visible: true, order: 7 },
-  { id: 'list_printers_status', title: 'Desempenho & Horas das Impressoras', category: 'lists', visible: true, order: 8 },
-  { id: 'list_failures', title: 'Controle de Falhas & Sucata', category: 'lists', visible: true, order: 9 }
+  { id: 'widget_cash_flow', title: 'Fluxo de Caixa Real (Entradas vs. Saídas da Oficina)', category: 'kpi', visible: true, order: 1 },
+  { id: 'pipeline_strip', title: 'Funil de Produção & Entregas', category: 'pipeline', visible: true, order: 2 },
+  { id: 'widget_filament_stock', title: 'Panorama do Estoque de Filamentos', category: 'widgets', visible: true, order: 3 },
+  { id: 'widget_supplies_stock', title: 'Estoque de Insumos & Componentes', category: 'widgets', visible: true, order: 4 },
+  { id: 'chart_profit_evolution', title: 'Evolução do Lucro Líquido', category: 'charts', visible: true, order: 5 },
+  { id: 'chart_cost_breakdown', title: 'Composição dos Custos de Produção', category: 'charts', visible: true, order: 6 },
+  { id: 'list_top_products', title: 'Top Produtos em Faturamento', category: 'lists', visible: true, order: 7 },
+  { id: 'chart_sales_channel', title: 'Distribuição de Vendas por Canal', category: 'charts', visible: true, order: 8 },
+  { id: 'list_printers_status', title: 'Desempenho & Horas das Impressoras', category: 'lists', visible: true, order: 9 },
+  { id: 'list_failures', title: 'Controle de Falhas & Sucata', category: 'lists', visible: true, order: 10 }
 ];
 
 export const Dashboard: React.FC = () => {
@@ -187,6 +208,64 @@ export const Dashboard: React.FC = () => {
   const [isCustomizeModalOpen, setIsCustomizeModalOpen] = useState(false);
   const [isFailureModalOpen, setIsFailureModalOpen] = useState(false);
   const [notificationOpen, setNotificationOpen] = useState(false);
+
+  // Real Cash Flow State (printflow_cash_expenses_${user?.id || 'guest'})
+  const expensesStorageKey = useMemo(() => `printflow_cash_expenses_${user?.id || 'guest'}`, [user?.id]);
+  const [cashExpenses, setCashExpenses] = useState<CashExpense[]>(() => {
+    try {
+      const stored = localStorage.getItem(`printflow_cash_expenses_${user?.id || 'guest'}`);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch (e) {
+      // ignore
+    }
+    return [];
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(expensesStorageKey, JSON.stringify(cashExpenses));
+    } catch (e) {
+      // ignore
+    }
+  }, [cashExpenses, expensesStorageKey]);
+
+  const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
+  const [isCashFlowExpanded, setIsCashFlowExpanded] = useState(false);
+  const [statementFilter, setStatementFilter] = useState<'all' | 'inflow' | 'outflow'>('all');
+  const [expenseDesc, setExpenseDesc] = useState('');
+  const [expenseAmount, setExpenseAmount] = useState<number | ''>('');
+  const [expenseCategory, setExpenseCategory] = useState<CashExpense['category']>('energia');
+  const [expenseDate, setExpenseDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [expenseNotes, setExpenseNotes] = useState('');
+
+  const handleSaveExpense = (e: React.FormEvent) => {
+    e.preventDefault();
+    const amt = Number(expenseAmount);
+    if (!expenseDesc.trim() || isNaN(amt) || amt <= 0) return;
+
+    const newExp: CashExpense = {
+      id: `exp-${Date.now()}`,
+      description: expenseDesc.trim(),
+      amount: amt,
+      category: expenseCategory,
+      date: expenseDate || new Date().toISOString().split('T')[0],
+      notes: expenseNotes.trim() || undefined,
+      createdAt: new Date().toISOString()
+    };
+
+    setCashExpenses(prev => [newExp, ...prev]);
+    setIsExpenseModalOpen(false);
+    setExpenseDesc('');
+    setExpenseAmount('');
+    setExpenseNotes('');
+  };
+
+  const handleDeleteExpense = (id: string) => {
+    setCashExpenses(prev => prev.filter(e => e.id !== id));
+  };
 
   // Failure Form State
   const [failPrinter, setFailPrinter] = useState('');
@@ -392,6 +471,168 @@ export const Dashboard: React.FC = () => {
       criticalItems
     };
   }, [supplies]);
+
+  // Fluxo de Caixa Real (Entradas vs. Compras de Filamentos/Insumos e Despesas da Oficina)
+  const cashFlowStats = useMemo(() => {
+    const selectedMonth = viewDate.getMonth();
+    const selectedYear = viewDate.getFullYear();
+
+    // 1. Entradas Efetivas (Pedidos Pagos)
+    const monthOrders = orders.filter(o => {
+      if (normalizeOrderStatus(o.status) === OrderStatus.CANCELLED) return false;
+      const d = new Date(o.createdAt);
+      return !isNaN(d.getTime()) && d.getMonth() === selectedMonth && d.getFullYear() === selectedYear;
+    });
+
+    let totalInflow = 0;
+    let paidOrdersCount = 0;
+    let pendingInflow = 0;
+    let pendingOrdersCount = 0;
+
+    monthOrders.forEach(o => {
+      const val = Number(o.totalValue) || 0;
+      if (isOrderPaid(o)) {
+        totalInflow += val;
+        paidOrdersCount++;
+      } else {
+        pendingInflow += val;
+        pendingOrdersCount++;
+      }
+    });
+
+    // 2. Compras de Novos Carretéis de Filamento no mês
+    const monthFilaments = (filaments || []).filter(f => {
+      if (!f.createdAt) return false;
+      const d = new Date(f.createdAt);
+      return !isNaN(d.getTime()) && d.getMonth() === selectedMonth && d.getFullYear() === selectedYear;
+    });
+    const filamentOutflow = monthFilaments.reduce((acc, f) => acc + (Number(f.pricePaid) || 0), 0);
+
+    // 3. Compras de Insumos & Componentes no mês
+    const monthSupplies = (supplies || []).filter(s => {
+      const dateStr = s.createdAt || s.updatedAt;
+      if (!dateStr) return false;
+      const d = new Date(dateStr);
+      return !isNaN(d.getTime()) && d.getMonth() === selectedMonth && d.getFullYear() === selectedYear;
+    });
+    const suppliesOutflow = monthSupplies.reduce((acc, s) => {
+      const pkg = Number(s.packagePrice);
+      if (pkg && pkg > 0) return acc + pkg;
+      return acc + ((Number(s.quantity) || 0) * (Number(s.unitCost) || 0));
+    }, 0);
+
+    // 4. Despesas Manuais da Oficina no mês
+    const monthExpenses = cashExpenses.filter(e => {
+      if (!e.date) return false;
+      const parts = e.date.split('-');
+      if (parts.length >= 2) {
+        const yr = parseInt(parts[0], 10);
+        const mo = parseInt(parts[1], 10) - 1;
+        return yr === selectedYear && mo === selectedMonth;
+      }
+      const d = new Date(e.date);
+      return !isNaN(d.getTime()) && d.getMonth() === selectedMonth && d.getFullYear() === selectedYear;
+    });
+    const manualExpensesOutflow = monthExpenses.reduce((acc, e) => acc + (Number(e.amount) || 0), 0);
+
+    // Totais e Saldo Líquido Real
+    const totalOutflow = filamentOutflow + suppliesOutflow + manualExpensesOutflow;
+    const netCashBalance = totalInflow - totalOutflow;
+    const isSuperavit = netCashBalance >= 0;
+    const reinvestmentRate = totalInflow > 0 ? Math.round((totalOutflow / totalInflow) * 100) : (totalOutflow > 0 ? 100 : 0);
+
+    // Extrato Cronológico de Transações
+    type CashTransaction = {
+      id: string;
+      type: 'inflow_order' | 'outflow_filament' | 'outflow_supply' | 'outflow_expense';
+      title: string;
+      subtitle: string;
+      amount: number;
+      date: string;
+      badgeText: string;
+      badgeColor: string;
+      isDeletable?: boolean;
+      rawId?: string;
+    };
+
+    const transactions: CashTransaction[] = [];
+
+    monthOrders.filter(o => isOrderPaid(o)).forEach(o => {
+      transactions.push({
+        id: `in-ord-${o.id}`,
+        type: 'inflow_order',
+        title: `Venda #${o.id.slice(-6)}`,
+        subtitle: `${o.customerId ? 'Cliente cadastrado' : 'Venda balcão'} • ${(o.paymentMethod || 'Pix')}`,
+        amount: Number(o.totalValue) || 0,
+        date: o.createdAt,
+        badgeText: 'Venda Paga',
+        badgeColor: 'emerald'
+      });
+    });
+
+    monthFilaments.forEach(f => {
+      transactions.push({
+        id: `out-fil-${f.id}`,
+        type: 'outflow_filament',
+        title: `Carretel ${f.brand} ${f.material}`,
+        subtitle: `${f.colorName} • ${f.weight}g (${formatCurrency(f.pricePaid)})`,
+        amount: Number(f.pricePaid) || 0,
+        date: f.createdAt,
+        badgeText: 'Filamento',
+        badgeColor: 'cyan'
+      });
+    });
+
+    monthSupplies.forEach(s => {
+      const cost = Number(s.packagePrice) || ((Number(s.quantity) || 0) * (Number(s.unitCost) || 0));
+      transactions.push({
+        id: `out-sup-${s.id}`,
+        type: 'outflow_supply',
+        title: `Insumo: ${s.name}`,
+        subtitle: `${s.quantity} un. (${s.category})`,
+        amount: cost,
+        date: s.createdAt || s.updatedAt || new Date().toISOString(),
+        badgeText: 'Insumo',
+        badgeColor: 'teal'
+      });
+    });
+
+    monthExpenses.forEach(e => {
+      const catObj = EXPENSE_CATEGORIES.find(c => c.id === e.category);
+      transactions.push({
+        id: `out-exp-${e.id}`,
+        type: 'outflow_expense',
+        title: e.description,
+        subtitle: `${catObj?.icon || '🏷️'} ${catObj?.label || e.category}${e.notes ? ` • ${e.notes}` : ''}`,
+        amount: Number(e.amount) || 0,
+        date: e.date,
+        badgeText: 'Oficina',
+        badgeColor: 'rose',
+        isDeletable: true,
+        rawId: e.id
+      });
+    });
+
+    transactions.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    return {
+      totalInflow,
+      paidOrdersCount,
+      pendingInflow,
+      pendingOrdersCount,
+      filamentOutflow,
+      monthFilamentsCount: monthFilaments.length,
+      suppliesOutflow,
+      monthSuppliesCount: monthSupplies.length,
+      manualExpensesOutflow,
+      monthExpensesCount: monthExpenses.length,
+      totalOutflow,
+      netCashBalance,
+      isSuperavit,
+      reinvestmentRate,
+      transactions
+    };
+  }, [viewDate, orders, filaments, supplies, cashExpenses]);
 
   // Production Pipeline / Kanban breakdown
   const pipeline = useMemo(() => {
@@ -727,6 +968,318 @@ export const Dashboard: React.FC = () => {
                 </div>
               </div>
             </div>
+          </div>
+        );
+
+      case 'widget_cash_flow':
+        return (
+          <div key="widget_cash_flow" className="bg-[#121927] border border-[#1e2a42] rounded-2xl p-5 shadow-lg shadow-black/20 hover:border-[#2a3c5d] transition-all">
+            {/* Header */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-[#1e2a42]/60 mb-5">
+              <div className="flex items-center gap-2.5">
+                <GripVertical className="w-4 h-4 text-slate-500" />
+                <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                  <Wallet className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-bold text-slate-100">Fluxo de Caixa Real da Oficina</h3>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
+                      Base Caixa (Liquidação)
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    Entradas pagas vs. Compras de carretéis, insumos de catálogo e despesas da oficina no mês
+                  </p>
+                </div>
+              </div>
+
+              {/* Action buttons */}
+              <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+                <button
+                  type="button"
+                  onClick={() => setIsExpenseModalOpen(true)}
+                  className="px-3 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-xs font-bold border border-rose-500/30 flex items-center gap-1.5 transition-all shadow-sm active:scale-95"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Lançar Despesa da Oficina</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsCashFlowExpanded(!isCashFlowExpanded)}
+                  className="px-3 py-1.5 rounded-xl bg-[#0b111e] hover:bg-[#1a263d] text-slate-300 text-xs font-semibold border border-[#1e2a42] flex items-center gap-1.5 transition-all"
+                >
+                  <Receipt className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>{isCashFlowExpanded ? 'Ocultar Extrato' : `Ver Extrato (${cashFlowStats.transactions.length})`}</span>
+                  {isCashFlowExpanded ? <ChevronUp className="w-3.5 h-3.5 text-slate-400" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-400" />}
+                </button>
+              </div>
+            </div>
+
+            {/* 3 Main Summary Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+              {/* Card 1: Entradas Efetivas */}
+              <div className="bg-[#0b111e] border border-emerald-500/20 rounded-xl p-4 flex flex-col justify-between relative overflow-hidden group hover:border-emerald-500/40 transition-all">
+                <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/5 rounded-full blur-2xl -mr-6 -mt-6 pointer-events-none"></div>
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                      ENTRADAS REALIZADAS
+                    </span>
+                    <span className="w-7 h-7 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                      <ArrowUpRight className="w-4 h-4" />
+                    </span>
+                  </div>
+                  <p className="text-2xl font-black text-emerald-400 font-mono tracking-tight">
+                    +{formatCurrency(cashFlowStats.totalInflow)}
+                  </p>
+                </div>
+                <div className="mt-3 pt-2.5 border-t border-[#1e2a42]/50 text-[11px] text-slate-400">
+                  <div className="flex justify-between items-center">
+                    <span>{cashFlowStats.paidOrdersCount} {cashFlowStats.paidOrdersCount === 1 ? 'venda liquidada' : 'vendas liquidadas'}</span>
+                    {cashFlowStats.pendingInflow > 0 && (
+                      <span className="text-amber-400 font-semibold flex items-center gap-1" title="A receber">
+                        <Clock className="w-3 h-3 text-amber-400" />
+                        +{formatCurrency(cashFlowStats.pendingInflow)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Card 2: Saídas Reais (Compras & Despesas) */}
+              <div className="bg-[#0b111e] border border-rose-500/20 rounded-xl p-4 flex flex-col justify-between relative overflow-hidden group hover:border-rose-500/40 transition-all">
+                <div className="absolute top-0 right-0 w-24 h-24 bg-rose-500/5 rounded-full blur-2xl -mr-6 -mt-6 pointer-events-none"></div>
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
+                      SAÍDAS TOTAIS (DESEMBOLSOS)
+                    </span>
+                    <span className="w-7 h-7 rounded-lg bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400">
+                      <ArrowDownRight className="w-4 h-4" />
+                    </span>
+                  </div>
+                  <p className="text-2xl font-black text-rose-400 font-mono tracking-tight">
+                    -{formatCurrency(cashFlowStats.totalOutflow)}
+                  </p>
+                </div>
+                <div className="mt-3 pt-2.5 border-t border-[#1e2a42]/50 text-[11px] text-slate-400">
+                  <div className="flex flex-wrap justify-between items-center gap-1 text-[10px]">
+                    <span className="text-cyan-400 flex items-center gap-1">
+                      <Droplets className="w-3 h-3" /> Filamentos: {formatCurrency(cashFlowStats.filamentOutflow)}
+                    </span>
+                    <span className="text-emerald-400 flex items-center gap-1">
+                      <PackageCheck className="w-3 h-3" /> Insumos: {formatCurrency(cashFlowStats.suppliesOutflow)}
+                    </span>
+                    <span className="text-rose-400 flex items-center gap-1">
+                      <Wrench className="w-3 h-3" /> Oficina: {formatCurrency(cashFlowStats.manualExpensesOutflow)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Card 3: Saldo Real do Caixa */}
+              <div className={`bg-[#0b111e] border rounded-xl p-4 flex flex-col justify-between relative overflow-hidden group transition-all ${
+                cashFlowStats.isSuperavit ? 'border-cyan-500/30 hover:border-cyan-500/50' : 'border-amber-500/30 hover:border-amber-500/50'
+              }`}>
+                <div className="absolute top-0 right-0 w-24 h-24 bg-cyan-500/5 rounded-full blur-2xl -mr-6 -mt-6 pointer-events-none"></div>
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                      <span className={`w-1.5 h-1.5 rounded-full ${cashFlowStats.isSuperavit ? 'bg-cyan-400' : 'bg-amber-400'}`}></span>
+                      SALDO REAL DO CAIXA
+                    </span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase border ${
+                      cashFlowStats.isSuperavit 
+                        ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' 
+                        : 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+                    }`}>
+                      {cashFlowStats.isSuperavit ? 'Superávit' : 'Reinvestimento'}
+                    </span>
+                  </div>
+                  <p className={`text-2xl font-black font-mono tracking-tight ${
+                    cashFlowStats.isSuperavit ? 'text-cyan-400' : 'text-amber-400'
+                  }`}>
+                    {cashFlowStats.netCashBalance >= 0 ? '+' : ''}{formatCurrency(cashFlowStats.netCashBalance)}
+                  </p>
+                </div>
+                <div className="mt-3 pt-2.5 border-t border-[#1e2a42]/50 text-[11px]">
+                  <p className="text-slate-400 truncate">
+                    {cashFlowStats.isSuperavit 
+                      ? 'Caixa positivo: entradas cobriram todas as saídas'
+                      : 'Estoque financiado: saídas amortizam nas próximas vendas'}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Reinvestment bar & quick composition */}
+            <div className="bg-[#0b111e] border border-[#1e2a42] rounded-xl p-3.5 mb-1">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs mb-2">
+                <span className="text-slate-300 font-semibold flex items-center gap-1.5">
+                  <Activity className="w-3.5 h-3.5 text-cyan-400" />
+                  Taxa de Reinvestimento / Cobertura:
+                  <strong className={cashFlowStats.reinvestmentRate > 100 ? 'text-amber-400' : 'text-emerald-400'}>
+                    {cashFlowStats.reinvestmentRate}%
+                  </strong>
+                </span>
+                <span className="text-[11px] text-slate-400">
+                  {cashFlowStats.totalInflow > 0 
+                    ? `De cada R$ 100 recebidos, ${formatCurrency((cashFlowStats.totalOutflow / cashFlowStats.totalInflow) * 100)} foram reinvestidos em estoque e custos.`
+                    : 'Nenhuma entrada liquidada registrada no período.'}
+                </span>
+              </div>
+
+              {/* Stacked bar */}
+              <div className="w-full h-2 rounded-full bg-[#121927] overflow-hidden flex border border-[#1e2a42]">
+                {cashFlowStats.totalOutflow > 0 ? (
+                  <>
+                    <div 
+                      style={{ width: `${Math.min(100, (cashFlowStats.filamentOutflow / cashFlowStats.totalOutflow) * 100)}%` }} 
+                      className="bg-cyan-400 h-full transition-all"
+                      title={`Filamentos: ${formatCurrency(cashFlowStats.filamentOutflow)}`}
+                    />
+                    <div 
+                      style={{ width: `${Math.min(100, (cashFlowStats.suppliesOutflow / cashFlowStats.totalOutflow) * 100)}%` }} 
+                      className="bg-emerald-400 h-full transition-all"
+                      title={`Insumos: ${formatCurrency(cashFlowStats.suppliesOutflow)}`}
+                    />
+                    <div 
+                      style={{ width: `${Math.min(100, (cashFlowStats.manualExpensesOutflow / cashFlowStats.totalOutflow) * 100)}%` }} 
+                      className="bg-rose-400 h-full transition-all"
+                      title={`Oficina: ${formatCurrency(cashFlowStats.manualExpensesOutflow)}`}
+                    />
+                  </>
+                ) : (
+                  <div className="w-full bg-slate-800 h-full" />
+                )}
+              </div>
+            </div>
+
+            {/* Expandable Cash Statement (Extrato Detalhado) */}
+            {isCashFlowExpanded && (
+              <div className="mt-4 pt-4 border-t border-[#1e2a42] animate-in fade-in duration-200">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider">
+                      Extrato Financeiro de Caixa ({cashFlowStats.transactions.length})
+                    </h4>
+                  </div>
+                  {/* Quick Filters */}
+                  <div className="flex items-center gap-1.5 bg-[#0b111e] p-1 rounded-xl border border-[#1e2a42] text-[11px]">
+                    <button
+                      type="button"
+                      onClick={() => setStatementFilter('all')}
+                      className={`px-2.5 py-1 rounded-lg font-semibold transition-all ${
+                        statementFilter === 'all' ? 'bg-[#1a263d] text-white shadow-sm' : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Todas ({cashFlowStats.transactions.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setStatementFilter('inflow')}
+                      className={`px-2.5 py-1 rounded-lg font-semibold transition-all ${
+                        statementFilter === 'inflow' ? 'bg-emerald-500/20 text-emerald-300 shadow-sm' : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Entradas ({cashFlowStats.paidOrdersCount})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setStatementFilter('outflow')}
+                      className={`px-2.5 py-1 rounded-lg font-semibold transition-all ${
+                        statementFilter === 'outflow' ? 'bg-rose-500/20 text-rose-300 shadow-sm' : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Saídas ({cashFlowStats.monthFilamentsCount + cashFlowStats.monthSuppliesCount + cashFlowStats.monthExpensesCount})
+                    </button>
+                  </div>
+                </div>
+
+                {/* List of transactions */}
+                <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                  {cashFlowStats.transactions
+                    .filter(t => {
+                      if (statementFilter === 'inflow') return t.type === 'inflow_order';
+                      if (statementFilter === 'outflow') return t.type !== 'inflow_order';
+                      return true;
+                    })
+                    .map(tx => {
+                      const isInflow = tx.type === 'inflow_order';
+                      const txDateFormatted = new Date(tx.date).toLocaleDateString('pt-BR');
+
+                      return (
+                        <div
+                          key={tx.id}
+                          className="bg-[#0b111e] border border-[#1e2a42] rounded-xl p-3 flex items-center justify-between hover:border-[#2a3c5d] transition-all text-xs"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                              isInflow 
+                                ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400' 
+                                : tx.type === 'outflow_filament'
+                                ? 'bg-cyan-500/10 border border-cyan-500/20 text-cyan-400'
+                                : tx.type === 'outflow_supply'
+                                ? 'bg-teal-500/10 border border-teal-500/20 text-teal-400'
+                                : 'bg-rose-500/10 border border-rose-500/20 text-rose-400'
+                            }`}>
+                              {isInflow ? (
+                                <ArrowUpRight className="w-4 h-4" />
+                              ) : tx.type === 'outflow_filament' ? (
+                                <Droplets className="w-4 h-4" />
+                              ) : tx.type === 'outflow_supply' ? (
+                                <PackageCheck className="w-4 h-4" />
+                              ) : (
+                                <Receipt className="w-4 h-4" />
+                              )}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <p className="font-semibold text-slate-200 truncate">{tx.title}</p>
+                                <span className={`text-[9px] px-1.5 py-0.2 rounded font-bold uppercase ${
+                                  isInflow 
+                                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' 
+                                    : 'bg-[#1a263d] text-slate-400 border border-[#2a3c5d]'
+                                }`}>
+                                  {tx.badgeText}
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-slate-400 truncate mt-0.5">
+                                {tx.subtitle} • <span className="text-slate-500">{txDateFormatted}</span>
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-3 shrink-0 ml-3">
+                            <span className={`font-mono font-bold text-sm ${isInflow ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {isInflow ? '+' : '-'}{formatCurrency(tx.amount)}
+                            </span>
+                            {tx.isDeletable && tx.rawId && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteExpense(tx.rawId!)}
+                                className="p-1 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors"
+                                title="Excluir lançamento da oficina"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                  {cashFlowStats.transactions.length === 0 && (
+                    <div className="text-center py-8 text-xs text-slate-500 bg-[#0b111e] rounded-xl border border-dashed border-[#1e2a42]">
+                      Nenhuma movimentação de caixa encontrada em {monthLabel}.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         );
 
@@ -1753,6 +2306,141 @@ export const Dashboard: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Lançar Despesa da Oficina */}
+      {isExpenseModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-[#121927] border border-[#1e2a42] rounded-2xl w-full max-w-lg p-6 shadow-2xl animate-in zoom-in-95 duration-200 max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between pb-4 border-b border-[#1e2a42] mb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-rose-500/20 text-rose-400 flex items-center justify-center">
+                  <Receipt className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-white text-base">Lançar Despesa da Oficina</h3>
+                  <p className="text-xs text-slate-400">Contabiliza no Fluxo de Caixa Real deste mês</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setIsExpenseModalOpen(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto flex-1 pr-1 space-y-4">
+              {/* Quick Presets */}
+              <div>
+                <p className="text-[10px] uppercase font-bold text-slate-400 mb-2">Preenchimento Rápido (Sugestões)</p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                  {EXPENSE_PRESETS.map((p, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => {
+                        setExpenseDesc(p.desc);
+                        setExpenseCategory(p.category);
+                      }}
+                      className="p-2 rounded-xl bg-[#0b111e] border border-[#1e2a42] hover:border-cyan-500/40 text-left text-xs transition-all flex items-center gap-2 group"
+                    >
+                      <span className="text-sm shrink-0">{p.icon}</span>
+                      <span className="text-slate-300 group-hover:text-cyan-300 font-medium truncate text-[11px]">{p.desc}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <form id="cash-expense-form" onSubmit={handleSaveExpense} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">Descrição da Despesa *</label>
+                  <input
+                    type="text"
+                    required
+                    value={expenseDesc}
+                    onChange={(e) => setExpenseDesc(e.target.value)}
+                    className="w-full bg-[#0b111e] border border-[#1e2a42] rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500"
+                    placeholder="Ex: Conta de Luz CEMIG, Álcool Isopropílico 1L, Bicos..."
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">Valor Total (R$) *</label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs font-bold">R$</span>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0.01"
+                        required
+                        value={expenseAmount}
+                        onChange={(e) => setExpenseAmount(e.target.value ? Number(e.target.value) : '')}
+                        className="w-full bg-[#0b111e] border border-[#1e2a42] rounded-xl pl-9 pr-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-cyan-500"
+                        placeholder="0,00"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">Data do Pagamento *</label>
+                    <input
+                      type="date"
+                      required
+                      value={expenseDate}
+                      onChange={(e) => setExpenseDate(e.target.value)}
+                      className="w-full bg-[#0b111e] border border-[#1e2a42] rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">Categoria da Despesa</label>
+                  <select
+                    value={expenseCategory}
+                    onChange={(e) => setExpenseCategory(e.target.value as CashExpense['category'])}
+                    className="w-full bg-[#0b111e] border border-[#1e2a42] rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500"
+                  >
+                    {EXPENSE_CATEGORIES.map(cat => (
+                      <option key={cat.id} value={cat.id}>
+                        {cat.icon} {cat.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">Observações ou Nota Fiscal (opcional)</label>
+                  <textarea
+                    rows={2}
+                    value={expenseNotes}
+                    onChange={(e) => setExpenseNotes(e.target.value)}
+                    className="w-full bg-[#0b111e] border border-[#1e2a42] rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500"
+                    placeholder="Ex: Compra feita no Mercado Livre, NF 1234..."
+                  />
+                </div>
+              </form>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-[#1e2a42] mt-4">
+              <button
+                type="button"
+                onClick={() => setIsExpenseModalOpen(false)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-white"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                form="cash-expense-form"
+                className="px-5 py-2 rounded-xl text-xs font-bold bg-rose-500 hover:bg-rose-600 text-white shadow-lg shadow-rose-500/20 active:scale-95 transition-all"
+              >
+                Registrar Saída no Caixa
+              </button>
+            </div>
           </div>
         </div>
       )}

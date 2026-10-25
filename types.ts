@@ -239,3 +239,13 @@ export interface DashboardCardConfig {
   order: number;
 }
 
+export interface CashExpense {
+  id: string;
+  description: string;
+  amount: number;
+  category: 'energia' | 'manutencao' | 'limpeza_insumos' | 'ferramentas' | 'frete' | 'aluguel_fixo' | 'outros';
+  date: string; // YYYY-MM-DD
+  notes?: string;
+  createdAt: string;
+}
+
