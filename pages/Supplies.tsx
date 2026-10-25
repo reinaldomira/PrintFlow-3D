@@ -207,11 +207,12 @@ export const Supplies: React.FC = () => {
     }).sort((a, b) => b.totalSpools - a.totalSpools);
   }, [filaments, failures]);
 
-  // Salvar novo insumo ou editar
+  // Salvar novo insumo ou editar com validação estrita do Supabase (Etapa 1)
   const handleSaveSupply = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingSupply?.name || !user) return;
+    if (isSaving || !editingSupply?.name?.trim() || !user) return;
     setIsSaving(true);
+    setActionNotice(null);
 
     try {
       const packagePrice = Number(editingSupply.packagePrice) || 0;
@@ -230,7 +231,7 @@ export const Supplies: React.FC = () => {
         min_quantity: Math.max(0, Number(editingSupply.minQuantity) || 10),
         unit_cost: unitCost,
         package_price: packagePrice,
-        packageUnits: packageUnits,
+        package_units: packageUnits,
         supplier: editingSupply.supplier?.trim() || null,
         link: editingSupply.link?.trim() || null,
         notes: editingSupply.notes?.trim() || null,
@@ -239,24 +240,25 @@ export const Supplies: React.FC = () => {
       };
 
       let savedId = editingSupply.id;
-      let errorOccurred = false;
 
-      try {
-        if (editingSupply.id) {
-          const { error } = await supabase.from('supplies').update(payload).eq('id', editingSupply.id);
-          if (error) throw error;
-        } else {
-          payload.created_at = new Date().toISOString();
-          const { data, error } = await supabase.from('supplies').insert([payload]).select().single();
-          if (error) throw error;
-          if (data?.id) savedId = data.id;
-        }
-      } catch (dbErr: any) {
-        // Salva com segurança no cache local resiliente
-        errorOccurred = true;
+      if (editingSupply.id) {
+        const { error } = await supabase
+          .from('supplies')
+          .update(payload)
+          .eq('id', editingSupply.id);
+        if (error) throw error;
+      } else {
+        payload.created_at = new Date().toISOString();
+        const { data, error } = await supabase
+          .from('supplies')
+          .insert([payload])
+          .select()
+          .single();
+        if (error) throw error;
+        if (data?.id) savedId = data.id;
       }
 
-      // Atualiza estado local imediatamente para o usuário
+      // Atualiza estado local apenas após confirmação do Supabase
       const finalizedItem: Supply = {
         id: savedId || `sup_${Date.now()}`,
         name: payload.name,
@@ -278,43 +280,48 @@ export const Supplies: React.FC = () => {
         setSupplies([finalizedItem, ...supplies]);
       }
 
+      // Fecha o modal e limpa o formulário somente se persistido com sucesso
       setIsModalOpen(false);
       setEditingSupply(null);
       setActionNotice({ 
         type: 'success', 
-        message: 'Insumo salvo com sucesso!' 
+        message: editingSupply.id ? 'Insumo atualizado com sucesso!' : 'Insumo cadastrado com sucesso!' 
       });
       setTimeout(() => setActionNotice(null), 3000);
       await refreshData();
     } catch (err: any) {
-      console.error('Erro ao salvar insumo:', err);
-      setActionNotice({ type: 'error', message: 'Erro ao salvar: ' + (err.message || 'Falha na conexão.') });
+      console.error('Erro ao salvar insumo no Supabase:', err);
+      // Preserva os dados preenchidos no formulário (não fecha o modal nem limpa editingSupply)
+      setActionNotice({ 
+        type: 'error', 
+        message: 'Falha ao salvar no banco de dados: ' + (err.message || 'Verifique sua conexão.') 
+      });
     } finally {
       setIsSaving(false);
     }
   };
 
-  // Ajuste rápido de estoque (+/-)
+  // Ajuste rápido de estoque (+/-) com validação confirmada antes de atualizar estado
   const handleQuickAdjust = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!stockAdjustItem || adjustAmount === '' || Number(adjustAmount) <= 0) return;
+    if (isAdjusting || !stockAdjustItem || adjustAmount === '' || Number(adjustAmount) <= 0) return;
     setIsAdjusting(true);
+    setActionNotice(null);
 
     try {
       const delta = adjustType === 'add' ? Number(adjustAmount) : -Number(adjustAmount);
       const newQuantity = Math.max(0, stockAdjustItem.quantity + delta);
 
-      // Atualização otimista
-      setSupplies(supplies.map(s => s.id === stockAdjustItem.id ? { ...s, quantity: newQuantity } : s));
+      // Executa primeiro no Supabase
+      const { error } = await supabase
+        .from('supplies')
+        .update({ quantity: newQuantity, updated_at: new Date().toISOString() })
+        .eq('id', stockAdjustItem.id);
 
-      try {
-        await supabase
-          .from('supplies')
-          .update({ quantity: newQuantity, updated_at: new Date().toISOString() })
-          .eq('id', stockAdjustItem.id);
-      } catch (err) {
-        // Persistido com segurança localmente
-      }
+      if (error) throw error;
+
+      // Atualiza estado local apenas após confirmação do Supabase
+      setSupplies(supplies.map(s => s.id === stockAdjustItem.id ? { ...s, quantity: newQuantity } : s));
 
       setActionNotice({
         type: 'success',
@@ -325,33 +332,42 @@ export const Supplies: React.FC = () => {
       setTimeout(() => setActionNotice(null), 3500);
       setStockAdjustItem(null);
       setAdjustAmount('');
+      await refreshData();
     } catch (err: any) {
-      setActionNotice({ type: 'error', message: 'Erro ao ajustar estoque: ' + err.message });
+      console.error('Erro ao ajustar estoque no Supabase:', err);
+      setActionNotice({ 
+        type: 'error', 
+        message: 'Não foi possível atualizar o estoque no banco: ' + (err.message || 'Falha de comunicação.') 
+      });
     } finally {
       setIsAdjusting(false);
     }
   };
 
-  // Excluir insumo
+  // Excluir insumo somente após confirmação do Supabase
   const confirmDeleteSupply = async () => {
-    if (!deleteTarget) return;
+    if (isDeleting || !deleteTarget) return;
     setIsDeleting(true);
+    setActionNotice(null);
     const idToDelete = deleteTarget.id;
+    const supplyName = deleteTarget.name;
 
     try {
-      setSupplies(supplies.filter(s => s.id !== idToDelete));
-      try {
-        await supabase.from('supplies').delete().eq('id', idToDelete);
-      } catch (err) {
-        // Removido com segurança do cache local
-      }
+      const { error } = await supabase.from('supplies').delete().eq('id', idToDelete);
+      if (error) throw error;
 
-      setActionNotice({ type: 'success', message: `Insumo "${deleteTarget.name}" excluído com sucesso!` });
+      // Remove localmente apenas após confirmação
+      setSupplies(supplies.filter(s => s.id !== idToDelete));
+      setActionNotice({ type: 'success', message: `Insumo "${supplyName}" excluído com sucesso!` });
       setTimeout(() => setActionNotice(null), 3000);
       setDeleteTarget(null);
       await refreshData();
     } catch (err: any) {
-      setActionNotice({ type: 'error', message: 'Erro ao excluir insumo: ' + err.message });
+      console.error('Erro ao excluir insumo no Supabase:', err);
+      setActionNotice({ 
+        type: 'error', 
+        message: 'Erro ao excluir insumo no banco: ' + (err.message || 'Falha na conexão.') 
+      });
     } finally {
       setIsDeleting(false);
     }

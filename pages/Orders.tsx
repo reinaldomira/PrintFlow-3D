@@ -552,6 +552,7 @@ export const Orders: React.FC = () => {
     } catch (err: any) {
       console.error('Erro ao salvar pedido:', err);
       setFormError(err.message || 'Erro ao comunicar com o banco de dados.');
+      throw err;
     } finally {
       setIsSaving(false);
     }
@@ -730,40 +731,81 @@ export const Orders: React.FC = () => {
     try {
       let warningMsg: string | null = null;
 
+      // 1. Validação prévia de saldo (Etapa 2 - Regra anti-estoque negativo)
+      if (!skipStock && (stockModal.type === 'create' || stockModal.type === 'edit')) {
+        const rowsToCheck = approvedRows.filter(r => r.apply && r.deltaGrams > 0);
+        for (const row of rowsToCheck) {
+          const currentSpool = filaments.find(f => f.id === row.filamentId);
+          const localBalance = currentSpool?.remainingWeight ?? currentSpool?.weight ?? 1000;
+          if (localBalance < row.deltaGrams) {
+            const missing = row.deltaGrams - localBalance;
+            throw new Error(`Estoque insuficiente no carretel "${row.name}": saldo em tela é de ${localBalance}g, mas são necessários ${row.deltaGrams}g (faltam ${missing}g). Ajuste o pedido ou use "Salvar sem Baixar Estoque".`);
+          }
+        }
+      }
+
       if (stockModal.type === 'create') {
         const confirmedConsumed: Record<string, number> = {};
+        const debitedSpools: { filamentId: string; grams: number; previousWeight: number }[] = [];
 
         if (!skipStock) {
           const updatesToRun = approvedRows.filter(r => r.apply && r.deltaGrams > 0);
           
           for (const row of updatesToRun) {
-            const current = filaments.find(f => f.id === row.filamentId);
-            const currentWeight = current?.remainingWeight ?? current?.weight ?? 1000;
-            const newWeight = Math.max(0, currentWeight - row.deltaGrams);
+            // Re-consulta o saldo atual diretamente no Supabase para mitigar concorrência (Problema C)
+            const { data: freshFil, error: fetchErr } = await supabase
+              .from('filaments')
+              .select('remainingWeight, weight, brand, material')
+              .eq('id', row.filamentId)
+              .single();
 
-            const { error } = await supabase
+            if (fetchErr || !freshFil) {
+              throw new Error(`Não foi possível verificar o saldo em tempo real do carretel ${row.name} no banco de dados.`);
+            }
+
+            const currentWeight = Number(freshFil.remainingWeight ?? freshFil.weight ?? 1000);
+            if (currentWeight < row.deltaGrams) {
+              const missing = row.deltaGrams - currentWeight;
+              throw new Error(`Estoque insuficiente no carretel "${freshFil.brand} - ${freshFil.material}": saldo disponível no banco é de ${currentWeight}g, necessário ${row.deltaGrams}g (faltam ${missing}g). A baixa foi interrompida para proteger seu estoque.`);
+            }
+
+            const newWeight = currentWeight - row.deltaGrams;
+
+            const { error: updErr } = await supabase
               .from('filaments')
               .update({ remainingWeight: newWeight })
               .eq('id', row.filamentId);
 
-            if (error) {
-              console.warn(`Erro ao baixar filamento ${row.filamentId}:`, error);
-              warningMsg = 'Aviso: Houve falha ao atualizar o saldo de um ou mais carretéis.';
-            } else {
-              confirmedConsumed[row.filamentId] = row.deltaGrams;
+            if (updErr) {
+              throw new Error(`Falha ao debitar carretel ${row.name} no Supabase: ${updErr.message}`);
             }
+
+            confirmedConsumed[row.filamentId] = row.deltaGrams;
+            debitedSpools.push({ filamentId: row.filamentId, grams: row.deltaGrams, previousWeight: currentWeight });
           }
         }
 
         const pending = stockModal.pendingOrderData;
         if (pending) {
-          await executeOrderSave(
-            pending.fullPayload,
-            pending.basePayload,
-            null,
-            confirmedConsumed,
-            skipStock ? 'none' : (Object.keys(confirmedConsumed).length > 0 ? 'confirmed' : 'none')
-          );
+          try {
+            await executeOrderSave(
+              pending.fullPayload,
+              pending.basePayload,
+              null,
+              confirmedConsumed,
+              skipStock ? 'none' : (Object.keys(confirmedConsumed).length > 0 ? 'confirmed' : 'none')
+            );
+          } catch (saveErr: any) {
+            // Se a gravação do pedido falhar após a baixa dos carretéis (Problema B)
+            console.error('Falha ao salvar pedido após baixa:', saveErr);
+            if (debitedSpools.length > 0) {
+              setPageNotice({
+                type: 'error',
+                message: `Atenção crítica: O estoque de ${debitedSpools.length} carretel(is) foi debitado no banco, mas a gravação do pedido falhou: ${saveErr.message}. Não tente baixar novamente para evitar duplicidade de baixa; tente salvar novamente o pedido sem baixa.`
+              });
+            }
+            throw saveErr;
+          }
         }
       } else if (stockModal.type === 'edit') {
         const existingOrder = orders.find(o => o.id === stockModal.orderId);
@@ -774,17 +816,34 @@ export const Orders: React.FC = () => {
           filaments
         );
         const finalConsumedMap = { ...newCalculated };
+        const debitedSpools: { filamentId: string; grams: number }[] = [];
 
         if (!skipStock) {
           for (const row of approvedRows) {
             if (!row.apply) continue;
-            const current = filaments.find(f => f.id === row.filamentId);
-            const currentWeight = current?.remainingWeight ?? current?.weight ?? 1000;
-            
+
+            // Re-consulta saldo atual no Supabase
+            const { data: freshFil, error: fetchErr } = await supabase
+              .from('filaments')
+              .select('remainingWeight, weight, brand, material')
+              .eq('id', row.filamentId)
+              .single();
+
+            if (fetchErr || !freshFil) {
+              throw new Error(`Não foi possível consultar o saldo do carretel ${row.name} no banco.`);
+            }
+
+            const currentWeight = Number(freshFil.remainingWeight ?? freshFil.weight ?? 1000);
             let newWeight = currentWeight;
+
             if (row.deltaGrams > 0) {
               // Consumo adicional
-              newWeight = Math.max(0, currentWeight - row.deltaGrams);
+              if (currentWeight < row.deltaGrams) {
+                const missing = row.deltaGrams - currentWeight;
+                throw new Error(`Estoque insuficiente para consumo adicional no carretel "${freshFil.brand} - ${freshFil.material}": disponível ${currentWeight}g, necessário ${row.deltaGrams}g (faltam ${missing}g).`);
+              }
+              newWeight = currentWeight - row.deltaGrams;
+              debitedSpools.push({ filamentId: row.filamentId, grams: row.deltaGrams });
             } else if (row.deltaGrams < 0) {
               // Estorno de sobra (apenas as gramas autorizadas em returnGrams)
               const gramsToReturn = Math.min(Math.abs(row.deltaGrams), Math.max(0, row.returnGrams || 0));
@@ -795,14 +854,13 @@ export const Orders: React.FC = () => {
             }
 
             if (newWeight !== currentWeight) {
-              const { error } = await supabase
+              const { error: updErr } = await supabase
                 .from('filaments')
                 .update({ remainingWeight: newWeight })
                 .eq('id', row.filamentId);
 
-              if (error) {
-                console.warn(`Erro ao atualizar estoque na edição:`, error);
-                warningMsg = 'Aviso: Houve falha ao movimentar um dos carretéis na edição.';
+              if (updErr) {
+                throw new Error(`Erro ao atualizar estoque do carretel ${row.name}: ${updErr.message}`);
               }
             }
           }
@@ -810,13 +868,23 @@ export const Orders: React.FC = () => {
 
         const pending = stockModal.pendingOrderData;
         if (pending) {
-          await executeOrderSave(
-            pending.fullPayload,
-            pending.basePayload,
-            stockModal.orderId!,
-            skipStock ? prevConsumed : finalConsumedMap,
-            skipStock ? (existingOrder?.stockDeductionStatus || 'none') : 'confirmed'
-          );
+          try {
+            await executeOrderSave(
+              pending.fullPayload,
+              pending.basePayload,
+              stockModal.orderId!,
+              skipStock ? prevConsumed : finalConsumedMap,
+              skipStock ? (existingOrder?.stockDeductionStatus || 'none') : 'confirmed'
+            );
+          } catch (saveErr: any) {
+            if (debitedSpools.length > 0) {
+              setPageNotice({
+                type: 'error',
+                message: `Atenção: A movimentação de estoque foi efetuada no banco, mas a atualização do pedido falhou: ${saveErr.message}. Não tente aplicar novamente para evitar duplicidade.`
+              });
+            }
+            throw saveErr;
+          }
         }
       } else if (stockModal.type === 'cancel') {
         const orderToCancel = orders.find(o => o.id === stockModal.orderId);
@@ -824,36 +892,41 @@ export const Orders: React.FC = () => {
 
         const prevConsumed = getOrderConsumedFilaments(orderToCancel);
         const updatedConsumed = { ...prevConsumed };
+        let returnedAny = false;
 
         if (!skipStock) {
           for (const row of approvedRows) {
             const gramsToReturn = Math.max(0, Math.min(row.maxReturnGrams, Number(row.returnGrams) || 0));
             if (gramsToReturn > 0) {
-              const current = filaments.find(f => f.id === row.filamentId);
-              const currentWeight = current?.remainingWeight ?? current?.weight ?? 1000;
+              const { data: freshFil, error: fetchErr } = await supabase
+                .from('filaments')
+                .select('remainingWeight, weight, brand, material')
+                .eq('id', row.filamentId)
+                .single();
+
+              const currentWeight = Number(freshFil?.remainingWeight ?? freshFil?.weight ?? 1000);
               const newWeight = currentWeight + gramsToReturn;
 
-              const { error } = await supabase
+              const { error: updErr } = await supabase
                 .from('filaments')
                 .update({ remainingWeight: newWeight })
                 .eq('id', row.filamentId);
 
-              if (error) {
-                console.warn(`Erro ao estornar filamento ${row.filamentId}:`, error);
-                warningMsg = 'Aviso: Não foi possível devolver o material ao carretel no Supabase.';
+              if (updErr) {
+                throw new Error(`Não foi possível devolver o material ao carretel ${row.name}: ${updErr.message}`);
               } else {
                 updatedConsumed[row.filamentId] = Math.max(0, (prevConsumed[row.filamentId] || 0) - gramsToReturn);
+                returnedAny = true;
               }
             }
           }
         }
 
         // Atualiza o status do pedido para CANCELLED no Supabase
-        const hasReturnedAnything = approvedRows.some(r => (r.returnGrams || 0) > 0);
         const updateData: any = {
           status: OrderStatus.CANCELLED,
           consumedFilaments: updatedConsumed,
-          stockDeductionStatus: hasReturnedAnything ? 'refunded' : (orderToCancel.stockDeductionStatus || 'none'),
+          stockDeductionStatus: returnedAny ? 'refunded' : (orderToCancel.stockDeductionStatus || 'none'),
           stockUpdatedAt: new Date().toISOString()
         };
 
@@ -878,7 +951,7 @@ export const Orders: React.FC = () => {
         setStockModal(null);
         setPageNotice({
           type: 'success',
-          message: hasReturnedAnything 
+          message: returnedAny 
             ? `Pedido #${orderToCancel.id.slice(0, 5).toUpperCase()} cancelado e materiais estornados com sucesso!` 
             : `Pedido #${orderToCancel.id.slice(0, 5).toUpperCase()} cancelado (estoque mantido sem alterações).`
         });
@@ -2580,16 +2653,36 @@ export const Orders: React.FC = () => {
                         )}
                       </div>
 
-                      {/* Alerta de Saldo Negativo se houver */}
+                      {/* Alerta Detalhado de Saldo Insuficiente (Etapa 2 - Problema A) */}
                       {isNegative && (
-                        <p className="text-[10px] text-red-400 font-bold mt-2 flex items-center gap-1">
-                          <AlertCircle className="w-3.5 h-3.5" />
-                          Atenção: O saldo físico deste carretel ficará negativo ({row.finalWeight}g). Confirme a pesagem do carretel na oficina.
-                        </p>
+                        <div className="w-full mt-2.5 p-2.5 rounded-xl bg-red-500/15 border border-red-500/50 text-red-200 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-1.5 animate-in fade-in">
+                          <div className="flex items-center gap-1.5">
+                            <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+                            <span>
+                              <strong>Estoque Insuficiente:</strong> Saldo atual: <strong className="text-white font-mono">{row.currentWeight}g</strong> | Necessário: <strong className="text-white font-mono">{row.deltaGrams}g</strong>
+                            </span>
+                          </div>
+                          <span className="font-mono font-black text-red-300 bg-red-950/60 px-2 py-0.5 rounded-md border border-red-500/40 shrink-0">
+                            Faltam {Math.abs(row.finalWeight)}g
+                          </span>
+                        </div>
                       )}
                     </div>
                   );
                 })}
+
+                {/* Banner Geral de Bloqueio se houver carretéis insuficientes selecionados */}
+                {stockModal.rows.some(r => r.apply && ((stockModal.type === 'create' && r.finalWeight < 0) || (stockModal.type === 'edit' && r.deltaGrams > 0 && r.finalWeight < 0))) && (
+                  <div className="p-3.5 rounded-2xl bg-red-500/15 border border-red-500/60 text-red-200 text-xs flex items-start gap-2.5 animate-in fade-in">
+                    <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <strong className="block font-bold">Bloqueio de Integridade: Material Insuficiente para Baixa</strong>
+                      <p className="text-[11px] text-red-300 leading-snug">
+                        O sistema protege seu estoque contra saldos negativos e baixas parciais fictícias. Para prosseguir, você pode <strong>desmarcar a opção "Baixar"</strong> neste carretel, alterar as quantidades do pedido ou clicar em <strong>"Salvar sem Baixar Estoque"</strong>.
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -2599,7 +2692,7 @@ export const Orders: React.FC = () => {
                 type="button"
                 disabled={isProcessingStock}
                 onClick={() => setStockModal(null)}
-                className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold text-xs transition disabled:opacity-50 order-3 sm:order-1"
+                className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold text-xs transition disabled:opacity-50 order-3 sm:order-1 cursor-pointer"
               >
                 {stockModal.type === 'cancel' ? 'Voltar (Manter Pedido)' : 'Voltar ao Pedido'}
               </button>
@@ -2610,7 +2703,7 @@ export const Orders: React.FC = () => {
                     type="button"
                     disabled={isProcessingStock}
                     onClick={() => handleConfirmStockMovement(stockModal.rows, true)}
-                    className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-zinc-700 hover:bg-zinc-800 text-zinc-300 font-bold text-xs transition disabled:opacity-50"
+                    className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-zinc-700 hover:bg-zinc-800 text-zinc-300 font-bold text-xs transition disabled:opacity-50 cursor-pointer"
                   >
                     Salvar sem Baixar Estoque
                   </button>
@@ -2621,7 +2714,7 @@ export const Orders: React.FC = () => {
                     type="button"
                     disabled={isProcessingStock}
                     onClick={() => handleConfirmStockMovement(stockModal.rows, true)}
-                    className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-zinc-700 hover:bg-zinc-800 text-zinc-300 font-bold text-xs transition disabled:opacity-50"
+                    className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-zinc-700 hover:bg-zinc-800 text-zinc-300 font-bold text-xs transition disabled:opacity-50 cursor-pointer"
                   >
                     Salvar sem Alterar Estoque
                   </button>
@@ -2632,33 +2725,48 @@ export const Orders: React.FC = () => {
                     type="button"
                     disabled={isProcessingStock}
                     onClick={() => handleConfirmStockMovement(stockModal.rows, true)}
-                    className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-amber-500/40 hover:bg-amber-500/10 text-amber-300 font-bold text-xs transition disabled:opacity-50"
+                    className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-amber-500/40 hover:bg-amber-500/10 text-amber-300 font-bold text-xs transition disabled:opacity-50 cursor-pointer"
                   >
                     Apenas Cancelar (Sem Devolver Material)
                   </button>
                 )}
 
-                <button
-                  type="button"
-                  disabled={isProcessingStock}
-                  onClick={() => handleConfirmStockMovement(stockModal.rows, false)}
-                  className={`w-full sm:w-auto px-5 py-2.5 rounded-xl font-black text-xs transition shadow-lg flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer ${
-                    stockModal.type === 'cancel'
-                      ? 'bg-amber-500 hover:bg-amber-400 text-zinc-950 shadow-amber-500/20'
-                      : 'bg-emerald-500 hover:bg-emerald-400 text-zinc-950 shadow-emerald-500/20'
-                  }`}
-                >
-                  {isProcessingStock ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Check className="w-4 h-4" />
-                  )}
-                  <span>
-                    {stockModal.type === 'create' && 'Confirmar e Baixar Estoque'}
-                    {stockModal.type === 'edit' && 'Aplicar Diferenças e Salvar'}
-                    {stockModal.type === 'cancel' && 'Confirmar Cancelamento e Estorno'}
-                  </span>
-                </button>
+                {(() => {
+                  const hasInsufficient = stockModal.rows.some(
+                    r => r.apply && ((stockModal.type === 'create' && r.finalWeight < 0) || (stockModal.type === 'edit' && r.deltaGrams > 0 && r.finalWeight < 0))
+                  );
+
+                  return (
+                    <button
+                      type="button"
+                      disabled={isProcessingStock || hasInsufficient}
+                      onClick={() => handleConfirmStockMovement(stockModal.rows, false)}
+                      title={hasInsufficient ? 'Não é possível baixar com estoque insuficiente. Desmarque o carretel ou salve sem baixar.' : undefined}
+                      className={`w-full sm:w-auto px-5 py-2.5 rounded-xl font-black text-xs transition shadow-lg flex items-center justify-center gap-2 disabled:opacity-50 ${
+                        hasInsufficient
+                          ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed border border-zinc-700'
+                          : stockModal.type === 'cancel'
+                          ? 'bg-amber-500 hover:bg-amber-400 text-zinc-950 shadow-amber-500/20 cursor-pointer'
+                          : 'bg-emerald-500 hover:bg-emerald-400 text-zinc-950 shadow-emerald-500/20 cursor-pointer'
+                      }`}
+                    >
+                      {isProcessingStock ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Check className="w-4 h-4" />
+                      )}
+                      <span>
+                        {hasInsufficient
+                          ? 'Estoque Insuficiente'
+                          : stockModal.type === 'create'
+                          ? 'Confirmar e Baixar Estoque'
+                          : stockModal.type === 'edit'
+                          ? 'Aplicar Diferenças e Salvar'
+                          : 'Confirmar Cancelamento e Estorno'}
+                      </span>
+                    </button>
+                  );
+                })()}
               </div>
             </div>
           </div>
