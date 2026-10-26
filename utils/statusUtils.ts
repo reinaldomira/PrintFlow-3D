@@ -155,32 +155,7 @@ export function isOrderPaid(order?: Order | null): boolean {
   if (!order) return false;
   const normalized = normalizeOrderStatus(order.status);
   if (normalized === OrderStatus.CANCELLED) return false;
-
-  // 1. Marcação explícita no pedido
   if (order.paymentStatus === 'PAID' || order.isPaid === true) return true;
-  if (order.paymentStatus === 'PENDING') return false;
-
-  // 2. Marcação embutida dentro do primeiro item JSONB
-  if (order.items && Array.isArray(order.items) && order.items.length > 0) {
-    const firstItem = order.items[0] as any;
-    if (firstItem?._isPaid === true || firstItem?._paymentStatus === 'PAID') return true;
-    if (firstItem?._paymentStatus === 'PENDING' || firstItem?._isPaid === false) return false;
-  }
-
-  // 3. Registro no array de pagamentos (payments)
-  if (order.payments && Array.isArray(order.payments) && order.payments.length > 0) {
-    const totalPaid = order.payments.reduce((acc, p) => acc + (Number(p.amount) || 0), 0);
-    const orderTotal = Number(order.totalValue ?? (order as any).total_value ?? 0);
-    if (totalPaid > 0 && (orderTotal <= 0 || totalPaid >= orderTotal * 0.95)) {
-      return true;
-    }
-  }
-
-  // 4. Fallback para pedidos legados já entregues (sem registro de pagamento)
-  if (normalized === OrderStatus.DELIVERED && (!order.payments || order.payments.length === 0)) {
-    return true;
-  }
-
   return false;
 }
 

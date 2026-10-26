@@ -82,13 +82,6 @@ export const getOrderConsumedFilaments = (order?: Order | null): Record<string, 
   if (order.consumedFilaments && typeof order.consumedFilaments === 'object') {
     return order.consumedFilaments;
   }
-  const rawAny = order as any;
-  if (rawAny.consumed_filaments && typeof rawAny.consumed_filaments === 'object') {
-    return rawAny.consumed_filaments;
-  }
-  if (order.items && order.items.length > 0 && (order.items[0] as any)?._consumedFilaments) {
-    return (order.items[0] as any)._consumedFilaments;
-  }
   return {};
 };
 
@@ -104,6 +97,24 @@ export const Orders: React.FC = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [pageNotice, setPageNotice] = useState<{ type: 'warning' | 'error' | 'success'; message: string } | null>(null);
+
+  useEffect(() => {
+    try {
+      const notice = sessionStorage.getItem('printflow_orders_migrated_notice');
+      if (notice) {
+        sessionStorage.removeItem('printflow_orders_migrated_notice');
+        setPageNotice({ type: 'success', message: notice });
+      }
+    } catch (e) {}
+
+    const handleNotice = (e: any) => {
+      if (e?.detail) {
+        setPageNotice({ type: 'success', message: e.detail });
+      }
+    };
+    window.addEventListener('printflow_orders_notice', handleNotice);
+    return () => window.removeEventListener('printflow_orders_notice', handleNotice);
+  }, []);
 
   // Estados de confirmação de exclusão e cancelamento sem bloqueio de janela
   const [deleteOrderTarget, setDeleteOrderTarget] = useState<{
@@ -543,87 +554,48 @@ export const Orders: React.FC = () => {
     setFormError(null);
 
     try {
-      const payloadWithStock = {
-        ...fullPayload,
+      // Remove qualquer campo que comece com "_" de cada item
+      const cleanItems = (fullPayload.items || []).map((item: any) => {
+        const clean: Record<string, any> = {};
+        for (const [key, val] of Object.entries(item)) {
+          if (!key.startsWith('_')) {
+            clean[key] = val;
+          }
+        }
+        return clean;
+      });
+
+      const orderPayload: any = {
+        customerId: fullPayload.customerId || null,
+        customer_id: fullPayload.customerId || null,
+        totalValue: fullPayload.totalValue,
+        total_value: fullPayload.total_value,
+        status: fullPayload.status,
+        items: cleanItems,
+        discount: fullPayload.discount ?? 0,
+        payments: fullPayload.payments ?? [],
+        paymentMethod: fullPayload.paymentMethod,
+        isPaid: fullPayload.isPaid,
+        paymentStatus: fullPayload.paymentStatus,
         consumedFilaments: consumedMap,
         stockDeductionStatus: stockStatus,
-        stockUpdatedAt: new Date().toISOString()
+        stockUpdatedAt: new Date().toISOString(),
+        custosFinanceiros: fullPayload.custosFinanceiros || null,
+        detalhesPrecificacao: fullPayload.detalhesPrecificacao || null
       };
 
-      // Backup de redundância: persiste o snapshot também dentro do primeiro item JSONB
-      // garantindo que bancos legados sem as colunas consumedFilaments, payments ou paymentStatus preservem os dados
-      if (payloadWithStock.items && payloadWithStock.items.length > 0) {
-        payloadWithStock.items[0]._consumedFilaments = consumedMap;
-        payloadWithStock.items[0]._stockStatus = stockStatus;
-        payloadWithStock.items[0]._isPaid = fullPayload.isPaid;
-        payloadWithStock.items[0]._paymentStatus = fullPayload.paymentStatus;
-        payloadWithStock.items[0]._payments = fullPayload.payments;
+      if (!orderIdToUpdate) {
+        orderPayload.user_id = user.id;
+        orderPayload.createdAt = new Date().toISOString();
+        orderPayload.created_at = new Date().toISOString();
       }
 
-      const executeSave = async (dataToSave: any) => {
-        if (orderIdToUpdate) {
-          return await supabase.from('orders').update(dataToSave).eq('id', orderIdToUpdate);
-        } else {
-          return await supabase.from('orders').insert([dataToSave]);
-        }
-      };
+      const { error } = orderIdToUpdate
+        ? await supabase.from('orders').update(orderPayload).eq('id', orderIdToUpdate)
+        : await supabase.from('orders').insert([orderPayload]);
 
-      let saveResult = await executeSave(payloadWithStock);
-
-      // Se falhar devido a coluna ausente (PGRST204) no PostgREST cache, aplica fallback dinâmico
-      if (saveResult.error && (saveResult.error.code === 'PGRST204' || saveResult.error.message?.includes('column') || saveResult.error.message?.includes('schema cache'))) {
-        console.warn('Detectada coluna ausente em orders no Supabase, aplicando fallback resiliente:', saveResult.error.message);
-        const retryPayload = { ...payloadWithStock };
-
-        if (saveResult.error.message?.includes('consumedFilaments') || saveResult.error.message?.includes('consumed_filaments')) {
-          delete retryPayload.consumedFilaments;
-          delete retryPayload.stockDeductionStatus;
-          delete retryPayload.stockUpdatedAt;
-        }
-        if (saveResult.error.message?.includes('custosFinanceiros') || saveResult.error.message?.includes('custos_financeiros')) {
-          delete retryPayload.custosFinanceiros;
-        }
-        if (saveResult.error.message?.includes('detalhesPrecificacao') || saveResult.error.message?.includes('detalhes_precificacao')) {
-          delete retryPayload.detalhesPrecificacao;
-        }
-        if (saveResult.error.message?.includes('discount')) {
-          delete retryPayload.discount;
-        }
-        if (saveResult.error.message?.includes('paymentMethod') || saveResult.error.message?.includes('payment_method')) {
-          delete retryPayload.paymentMethod;
-        }
-        if (saveResult.error.message?.includes('paymentStatus') || saveResult.error.message?.includes('payment_status')) {
-          delete retryPayload.paymentStatus;
-          delete retryPayload.payment_status;
-        }
-        if (saveResult.error.message?.includes('isPaid') || saveResult.error.message?.includes('is_paid')) {
-          delete retryPayload.isPaid;
-          delete retryPayload.is_paid;
-        }
-        if (saveResult.error.message?.includes('payments')) {
-          delete retryPayload.payments;
-        }
-
-        saveResult = await executeSave(retryPayload);
-
-        // Se ainda falhar com outro campo não suportado, salva com o payload essencial garantido
-        if (saveResult.error && (saveResult.error.code === 'PGRST204' || saveResult.error.message?.includes('column') || saveResult.error.message?.includes('schema cache'))) {
-          console.warn('Salvando com payload mínimo garantido:', saveResult.error.message);
-          const safeMinPayload = {
-            customerId: basePayload.customerId || null,
-            customer_id: basePayload.customerId || null,
-            items: payloadWithStock.items,
-            totalValue: basePayload.totalValue,
-            total_value: basePayload.total_value,
-            status: basePayload.status,
-            user_id: user.id
-          };
-          saveResult = await executeSave(safeMinPayload);
-        }
-      }
-
-      if (saveResult.error) {
-        throw new Error(saveResult.error.message || 'Falha ao salvar pedido no Supabase.');
+      if (error) {
+        throw new Error(error.message || 'Falha ao salvar pedido no Supabase.');
       }
 
       try {
@@ -690,11 +662,8 @@ export const Orders: React.FC = () => {
       total_value: Number(orderTotal) || 0,
       status: orderForm.status || OrderStatus.QUEUE,
       paymentMethod: chosenMethod,
-      payment_method: chosenMethod,
       paymentStatus: paymentStatus,
-      payment_status: paymentStatus,
       isPaid: isPaid,
-      is_paid: isPaid,
       discount: Number(orderForm.discount) || 0,
       user_id: user.id
     };
@@ -708,15 +677,10 @@ export const Orders: React.FC = () => {
       ...basePayload,
       discount: Number(orderForm.discount) || 0,
       paymentMethod: chosenMethod,
-      payment_method: chosenMethod,
       paymentStatus: paymentStatus,
-      payment_status: paymentStatus,
       isPaid: isPaid,
-      is_paid: isPaid,
       custosFinanceiros: financialForm,
-      custos_financeiros: financialForm,
       detalhesPrecificacao: pricingBreakdown,
-      detalhes_precificacao: pricingBreakdown,
       payments: isPaid ? [{
         id: Math.random().toString(36).substring(2, 9),
         amount: Number(orderTotal) || 0,
@@ -1032,18 +996,10 @@ export const Orders: React.FC = () => {
           stockUpdatedAt: new Date().toISOString()
         };
 
-        let { error: cancelError } = await supabase
+        const { error: cancelError } = await supabase
           .from('orders')
           .update(updateData)
           .eq('id', orderToCancel.id);
-
-        if (cancelError && (cancelError.code === 'PGRST204' || cancelError.message?.includes('column'))) {
-          const { error: fallbackErr } = await supabase
-            .from('orders')
-            .update({ status: OrderStatus.CANCELLED })
-            .eq('id', orderToCancel.id);
-          cancelError = fallbackErr;
-        }
 
         if (cancelError) {
           throw new Error(cancelError.message || 'Falha ao atualizar status para cancelado.');
@@ -1268,7 +1224,7 @@ export const Orders: React.FC = () => {
     e.stopPropagation();
     const currentlyPaid = isOrderPaid(order);
     const newPaid = !currentlyPaid;
-    const chosenMethod = order.paymentMethod || (order as any).payment_method || (order.payments && order.payments[0]?.method) || PaymentMethod.PIX;
+    const chosenMethod = order.paymentMethod || PaymentMethod.PIX;
     const orderTotal = Number(order.totalValue ?? (order as any).total_value ?? 0);
 
     const updatedPayments = newPaid ? [{
@@ -1278,59 +1234,27 @@ export const Orders: React.FC = () => {
       method: chosenMethod
     }] : [];
 
-    // Clona e atualiza items com o snapshot de pagamento embutido (redundância JSONB universal)
-    const currentItems = Array.isArray(order.items) && order.items.length > 0
-      ? order.items.map((it, idx) => {
-          if (idx === 0) {
-            return {
-              ...it,
-              _isPaid: newPaid,
-              _paymentStatus: newPaid ? 'PAID' : 'PENDING',
-              _payments: updatedPayments
-            };
-          }
-          return { ...it };
-        })
-      : [{
-          partId: 'general_order',
-          name: 'Item do Pedido',
-          quantity: 1,
-          unitPrice: orderTotal,
-          _isPaid: newPaid,
-          _paymentStatus: newPaid ? 'PAID' : 'PENDING',
-          _payments: updatedPayments
-        }];
-
-    // 1. Atualização otimista imediata na UI
-    setOrders(prev => prev.map(o => {
+    // Atualização otimista no estado
+    setOrders(orders.map(o => {
       if (o.id !== order.id) return o;
       return {
         ...o,
-        items: updatedItems,
-        isPaid: newPaid,
-        paymentStatus: newPaid ? 'PAID' : 'PENDING',
-        payments: updatedPayments
-      };
-    }));
-
-    // 2. Cache local resiliente por ID do pedido
-    try {
-      const stored = localStorage.getItem('printflow_orders_payment_status');
-      const parsed = stored ? JSON.parse(stored) : {};
-      parsed[order.id] = {
         isPaid: newPaid,
         paymentStatus: newPaid ? 'PAID' : 'PENDING',
         payments: updatedPayments,
-        updatedAt: new Date().toISOString()
+        paymentMethod: chosenMethod
       };
-      localStorage.setItem('printflow_orders_payment_status', JSON.stringify(parsed));
-    } catch (err) {}
+    }));
 
-    // 3. Atualização no Supabase: atualiza a coluna 'items' (que armazena _isPaid e _payments no JSONB)
     try {
       const { error } = await supabase
         .from('orders')
-        .update({ items: updatedItems })
+        .update({
+          isPaid: newPaid,
+          paymentStatus: newPaid ? 'PAID' : 'PENDING',
+          payments: updatedPayments,
+          paymentMethod: chosenMethod
+        })
         .eq('id', order.id);
 
       if (error) {

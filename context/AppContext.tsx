@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
-import { Part, Customer, Order, Settings, User, Filament, Printer, BusinessInfo, Supply, PrintFailure, PaymentMethod } from '../types';
+import { Part, Customer, Order, Settings, User, Filament, Printer, BusinessInfo, Supply, PrintFailure, CashExpense, PaymentMethod } from '../types';
 import { supabase } from '../services/supabase';
 import { 
   SettingsSyncState, 
@@ -13,6 +13,58 @@ import {
   extractCarrierData 
 } from '../services/settingsService';
 
+const isValidUUID = (id?: string | null): boolean => {
+  if (!id || typeof id !== 'string') return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id.trim());
+};
+
+const rowToFailure = (row: any): PrintFailure => ({
+  id: row.id,
+  printerId: row.printer_id || undefined,
+  printerName: row.printer_name || 'Impressora',
+  reason: row.reason || '',
+  filamentId: row.filament_id || undefined,
+  filamentName: row.filament_name || undefined,
+  gramsLost: Number(row.grams_lost) || 0,
+  printTimeHoursLost: Number(row.print_time_hours_lost) || 0,
+  costLost: Number(row.cost_lost) || 0,
+  date: row.failure_date || (row.created_at ? row.created_at.split('T')[0] : new Date().toISOString().split('T')[0]),
+  notes: row.notes || undefined
+});
+
+const failureToRow = (data: Omit<PrintFailure, 'id'>, userId: string) => ({
+  user_id: userId,
+  printer_id: isValidUUID(data.printerId) ? data.printerId : null,
+  printer_name: data.printerName || 'Impressora',
+  reason: data.reason || 'Outro',
+  filament_id: isValidUUID(data.filamentId) ? data.filamentId : null,
+  filament_name: data.filamentName || null,
+  grams_lost: Number(data.gramsLost) || 0,
+  print_time_hours_lost: Number(data.printTimeHoursLost) || 0,
+  cost_lost: Number(data.costLost) || 0,
+  failure_date: data.date || new Date().toISOString().split('T')[0],
+  notes: data.notes || null
+});
+
+const rowToCashExpense = (row: any): CashExpense => ({
+  id: row.id,
+  description: row.description || '',
+  amount: Number(row.amount) || 0,
+  category: (row.category || 'outros') as CashExpense['category'],
+  date: row.expense_date || (row.created_at ? row.created_at.split('T')[0] : new Date().toISOString().split('T')[0]),
+  notes: row.notes || undefined,
+  createdAt: row.created_at || new Date().toISOString()
+});
+
+const cashExpenseToRow = (data: Omit<CashExpense, 'id' | 'createdAt'>, userId: string) => ({
+  user_id: userId,
+  description: data.description,
+  amount: Number(data.amount) || 0,
+  category: data.category || 'outros',
+  expense_date: data.date || new Date().toISOString().split('T')[0],
+  notes: data.notes || null
+});
+
 interface AppContextType {
   parts: Part[];
   customers: Customer[];
@@ -21,6 +73,11 @@ interface AppContextType {
   printers: Printer[];
   supplies: Supply[];
   failures: PrintFailure[];
+  addFailure: (data: Omit<PrintFailure, 'id'>) => Promise<boolean>;
+  deleteFailure: (id: string) => Promise<boolean>;
+  cashExpenses: CashExpense[];
+  addCashExpense: (data: Omit<CashExpense, 'id' | 'createdAt'>) => Promise<boolean>;
+  deleteCashExpense: (id: string) => Promise<boolean>;
   settings: Settings;
   settingsSyncState: SettingsSyncState;
   settingsConflict: { remoteUpdatedAt: string; remoteVersion?: number; pendingSettings: Settings } | null;
@@ -34,7 +91,6 @@ interface AppContextType {
   setFilaments: (filaments: Filament[]) => void;
   setPrinters: (printers: Printer[]) => void;
   setSupplies: (supplies: Supply[]) => void;
-  setFailures: (failures: PrintFailure[]) => void;
   setSettings: (settings: Settings, options?: { force?: boolean; expectedVersion?: number }) => Promise<boolean>;
   setUser: (user: User | null) => void;
   logout: () => Promise<void>;
@@ -58,16 +114,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [filaments, setFilamentsState] = useState<Filament[]>([]);
   const [printers, setPrintersState] = useState<Printer[]>([]);
   const [supplies, setSuppliesState] = useState<Supply[]>([]);
-  const [failures, setFailuresState] = useState<PrintFailure[]>(() => {
-    try {
-      const stored = localStorage.getItem('printflow_failures');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed)) return parsed;
-      }
-    } catch (e) {}
-    return [];
-  });
+  const [failures, setFailuresState] = useState<PrintFailure[]>([]);
+  const [cashExpenses, setCashExpensesState] = useState<CashExpense[]>([]);
   const [settings, setSettingsState] = useState<Settings>(DEFAULT_SETTINGS);
   const [settingsSyncState, setSettingsSyncState] = useState<SettingsSyncState>('synced');
   const [settingsConflict, setSettingsConflict] = useState<{ remoteUpdatedAt: string; remoteVersion?: number; pendingSettings: Settings } | null>(null);
@@ -77,6 +125,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const isRefreshingRef = useRef(false);
   const lastRefreshTimeRef = useRef(0);
   const warnedMissingTablesRef = useRef<Set<string>>(new Set());
+  const migratedFailuresRef = useRef(false);
+  const migratedExpensesRef = useRef(false);
+  const migratedPaymentStatusRef = useRef(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -97,11 +148,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setFilamentsState([]);
         setPrintersState([]);
         setSuppliesState([]);
+        setFailuresState([]);
+        setCashExpensesState([]);
         setSettingsState(DEFAULT_SETTINGS);
         setSettingsSyncState('synced');
         setSettingsConflict(null);
         setDbError(null);
         warnedMissingTablesRef.current.clear();
+        migratedFailuresRef.current = false;
+        migratedExpensesRef.current = false;
+        migratedPaymentStatusRef.current = false;
       }
     });
 
@@ -166,16 +222,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     lastRefreshTimeRef.current = Date.now();
     
     try {
-      const fetchTable = async (table: string, orderCol?: string): Promise<TableFetchResult> => {
+      const fetchTable = async (table: string, orderCol?: string, ascending?: boolean): Promise<TableFetchResult> => {
         try {
           let query = supabase.from(table).select('*').eq('user_id', user.id);
           if (orderCol) {
-            query = query.order(orderCol, { ascending: table !== 'orders' && table !== 'parts' });
+            const isAsc = typeof ascending === 'boolean'
+              ? ascending
+              : (table !== 'orders' && table !== 'parts' && table !== 'failures' && table !== 'cash_expenses');
+            query = query.order(orderCol, { ascending: isAsc });
           }
           const { data, error } = await query;
           if (error) {
-            // Se for a tabela opcional 'supplies', silencia sem emitir warning: usa cache local com segurança
-            if (table === 'supplies') {
+            // Se for tabela opcional (supplies, failures ou cash_expenses), trata com segurança sem emitir warning agressivo
+            if (table === 'supplies' || table === 'failures' || table === 'cash_expenses') {
+              if (!warnedMissingTablesRef.current.has(table)) {
+                console.warn(`Aviso na tabela opcional "${table}":`, sanitizeErrorMessage(error.message || `Código ${error.code || 'desconhecido'}`));
+                warnedMissingTablesRef.current.add(table);
+              }
               return { table, data: null, error: null, success: false };
             }
 
@@ -203,13 +266,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       };
 
-      const [partsRes, customersRes, ordersRes, filamentsRes, printersRes, suppliesRes] = await Promise.all([
+      const [partsRes, customersRes, ordersRes, filamentsRes, printersRes, suppliesRes, failuresRes, cashExpensesRes] = await Promise.all([
         fetchTable('parts', 'createdAt'),
         fetchTable('customers', 'name'),
         fetchTable('orders', 'createdAt'),
         fetchTable('filaments', 'brand'),
         fetchTable('printers', 'brand'),
-        fetchTable('supplies', 'name')
+        fetchTable('supplies', 'name'),
+        fetchTable('failures', 'created_at', false),
+        fetchTable('cash_expenses', 'created_at', false)
       ]);
 
       // Preserva e normaliza dados de peças, garantindo que insumos vinculados nunca sejam perdidos
@@ -269,30 +334,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       if (customersRes.success && customersRes.data !== null) setCustomersState(customersRes.data);
       if (ordersRes.success && ordersRes.data !== null) {
-        let cachedPaymentStatuses: Record<string, any> = {};
-        try {
-          const stored = localStorage.getItem('printflow_orders_payment_status');
-          if (stored) cachedPaymentStatuses = JSON.parse(stored);
-        } catch (e) {}
-
         const normalizedOrders = (ordersRes.data || []).map((row: any) => {
           const pm = row.paymentMethod || row.payment_method || (row.payments && row.payments[0]?.method) || PaymentMethod.PIX;
           const cid = row.customerId || row.customer_id || '';
           const tv = typeof row.totalValue === 'number' ? row.totalValue : (Number(row.total_value) || 0);
           const ca = row.createdAt || row.created_at || new Date().toISOString();
 
-          // Resolução de pagamento resiliente (tabela, JSONB de items ou cache local)
-          const firstItem = Array.isArray(row.items) && row.items[0] ? row.items[0] : null;
-          const localPayment = cachedPaymentStatuses[row.id];
+          // Leitura direta das colunas reais do banco
+          const isPaid = Boolean(row.isPaid ?? row.is_paid ?? false);
+          const paymentStatus = row.paymentStatus ?? row.payment_status ?? (isPaid ? 'PAID' : 'PENDING');
+          const payments = Array.isArray(row.payments) ? row.payments : [];
+          const consumedFilaments = (row.consumedFilaments && typeof row.consumedFilaments === 'object')
+            ? row.consumedFilaments
+            : ((row.consumed_filaments && typeof row.consumed_filaments === 'object') ? row.consumed_filaments : {});
+          const stockDeductionStatus = row.stockDeductionStatus || row.stock_deduction_status || 'none';
+          const stockUpdatedAt = row.stockUpdatedAt || row.stock_updated_at || undefined;
+          const custosFinanceiros = row.custosFinanceiros || row.custos_financeiros || undefined;
+          const detalhesPrecificacao = row.detalhesPrecificacao || row.detalhes_precificacao || undefined;
+          const discount = Number(row.discount) || 0;
 
-          const isPaid = row.isPaid ?? row.is_paid ?? firstItem?._isPaid ?? localPayment?.isPaid;
-          const paymentStatus = row.paymentStatus ?? row.payment_status ?? firstItem?._paymentStatus ?? localPayment?.paymentStatus;
-          const payments = (Array.isArray(row.payments) && row.payments.length > 0)
-            ? row.payments
-            : (firstItem?._payments || localPayment?.payments || []);
+          // Sanitiza itens de orders para remover quaisquer propriedades com '_'
+          const cleanItems = Array.isArray(row.items)
+            ? row.items.map((it: any) => {
+                if (!it || typeof it !== 'object') return it;
+                const clean: Record<string, any> = {};
+                for (const [k, v] of Object.entries(it)) {
+                  if (!k.startsWith('_')) clean[k] = v;
+                }
+                return clean;
+              })
+            : [];
 
           return {
             ...row,
+            items: cleanItems,
             paymentMethod: pm,
             payment_method: pm,
             customerId: cid,
@@ -303,7 +378,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             created_at: ca,
             isPaid,
             paymentStatus,
-            payments
+            payments,
+            consumedFilaments,
+            stockDeductionStatus,
+            stockUpdatedAt,
+            custosFinanceiros,
+            detalhesPrecificacao,
+            discount
           };
         });
         setOrdersState(normalizedOrders);
@@ -335,6 +416,173 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const cached = localStorage.getItem(`printflow_supplies_${user.id}`);
           if (cached) setSuppliesState(JSON.parse(cached));
         } catch (e) {}
+      }
+
+      if (failuresRes.success && failuresRes.data !== null) {
+        setFailuresState(failuresRes.data.map(rowToFailure));
+      } else {
+        setFailuresState([]);
+      }
+
+      if (cashExpensesRes.success && cashExpensesRes.data !== null) {
+        setCashExpensesState(cashExpensesRes.data.map(rowToCashExpense));
+      } else {
+        setCashExpensesState([]);
+      }
+
+      // Migração única de dados legados do localStorage para o Supabase
+      if (!migratedFailuresRef.current) {
+        try {
+          const rawFailures = localStorage.getItem('printflow_failures');
+          if (rawFailures) {
+            const parsed = JSON.parse(rawFailures);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              migratedFailuresRef.current = true;
+              const rows = parsed.map(f => failureToRow(f, user.id));
+              const { data: inserted, error: mError } = await supabase
+                .from('failures')
+                .insert(rows)
+                .select();
+
+              if (!mError && inserted) {
+                localStorage.removeItem('printflow_failures');
+                setFailuresState(prev => {
+                  const existingIds = new Set(prev.map(p => p.id));
+                  const newItems = inserted.map(rowToFailure).filter(f => !existingIds.has(f.id));
+                  return [...newItems, ...prev];
+                });
+                console.log(`Migradas ${inserted.length} falhas antigas do localStorage para o Supabase.`);
+              } else {
+                migratedFailuresRef.current = false;
+                if (mError) console.warn('Aviso ao migrar printflow_failures:', mError.message);
+              }
+            } else {
+              localStorage.removeItem('printflow_failures');
+              migratedFailuresRef.current = true;
+            }
+          } else {
+            migratedFailuresRef.current = true;
+          }
+        } catch (e) {
+          migratedFailuresRef.current = false;
+        }
+      }
+
+      if (!migratedExpensesRef.current) {
+        try {
+          const rawExpenses = localStorage.getItem(`printflow_cash_expenses_${user.id}`);
+          if (rawExpenses) {
+            const parsed = JSON.parse(rawExpenses);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              migratedExpensesRef.current = true;
+              const rows = parsed.map(e => cashExpenseToRow(e, user.id));
+              const { data: inserted, error: mError } = await supabase
+                .from('cash_expenses')
+                .insert(rows)
+                .select();
+
+              if (!mError && inserted) {
+                localStorage.removeItem(`printflow_cash_expenses_${user.id}`);
+                setCashExpensesState(prev => {
+                  const existingIds = new Set(prev.map(p => p.id));
+                  const newItems = inserted.map(rowToCashExpense).filter(e => !existingIds.has(e.id));
+                  return [...newItems, ...prev];
+                });
+                console.log(`Migradas ${inserted.length} despesas antigas do localStorage para o Supabase.`);
+              } else {
+                migratedExpensesRef.current = false;
+                if (mError) console.warn('Aviso ao migrar printflow_cash_expenses:', mError.message);
+              }
+            } else {
+              localStorage.removeItem(`printflow_cash_expenses_${user.id}`);
+              migratedExpensesRef.current = true;
+            }
+          } else {
+            migratedExpensesRef.current = true;
+          }
+        } catch (e) {
+          migratedExpensesRef.current = false;
+        }
+      }
+
+      if (!migratedPaymentStatusRef.current) {
+        try {
+          const rawPaymentCache = localStorage.getItem('printflow_orders_payment_status');
+          if (rawPaymentCache) {
+            const parsed = JSON.parse(rawPaymentCache);
+            if (parsed && typeof parsed === 'object') {
+              migratedPaymentStatusRef.current = true;
+              let updatedCount = 0;
+              let hadError = false;
+
+              for (const [orderId, cacheVal] of Object.entries(parsed)) {
+                if (!cacheVal || typeof cacheVal !== 'object') continue;
+                const cachedIsPaid = Boolean((cacheVal as any).isPaid);
+                const matchingOrder = (ordersRes.data || []).find((o: any) => o.id === orderId);
+
+                // Compara se o isPaid no banco é diferente do cache
+                if (matchingOrder) {
+                  const dbIsPaid = Boolean(matchingOrder.isPaid ?? matchingOrder.is_paid ?? false);
+                  if (dbIsPaid !== cachedIsPaid) {
+                    const cachedStatus = (cacheVal as any).paymentStatus || (cachedIsPaid ? 'PAID' : 'PENDING');
+                    const cachedPayments = Array.isArray((cacheVal as any).payments) ? (cacheVal as any).payments : [];
+                    const { error: updErr } = await supabase
+                      .from('orders')
+                      .update({
+                        isPaid: cachedIsPaid,
+                        paymentStatus: cachedStatus,
+                        payments: cachedPayments
+                      })
+                      .eq('id', orderId)
+                      .eq('user_id', user.id);
+
+                    if (updErr) {
+                      console.warn(`Erro ao migrar pagamento do pedido ${orderId}:`, updErr.message);
+                      hadError = true;
+                    } else {
+                      updatedCount++;
+                    }
+                  }
+                }
+              }
+
+              if (!hadError) {
+                localStorage.removeItem('printflow_orders_payment_status');
+                if (updatedCount > 0) {
+                  const noticeMsg = `${updatedCount} pedido(s) tiveram o status de pagamento recuperado deste aparelho.`;
+                  console.log(noticeMsg);
+                  try {
+                    sessionStorage.setItem('printflow_orders_migrated_notice', noticeMsg);
+                    window.dispatchEvent(new CustomEvent('printflow_orders_notice', { detail: noticeMsg }));
+                  } catch (e) {}
+
+                  // Atualiza localmente o estado dos pedidos
+                  setOrdersState(prev => prev.map(o => {
+                    const c = parsed[o.id];
+                    if (c && Boolean(c.isPaid) !== Boolean(o.isPaid)) {
+                      return {
+                        ...o,
+                        isPaid: Boolean(c.isPaid),
+                        paymentStatus: c.paymentStatus || (c.isPaid ? 'PAID' : 'PENDING'),
+                        payments: Array.isArray(c.payments) ? c.payments : o.payments
+                      };
+                    }
+                    return o;
+                  }));
+                }
+              } else {
+                migratedPaymentStatusRef.current = false;
+              }
+            } else {
+              localStorage.removeItem('printflow_orders_payment_status');
+              migratedPaymentStatusRef.current = true;
+            }
+          } else {
+            migratedPaymentStatusRef.current = true;
+          }
+        } catch (e) {
+          migratedPaymentStatusRef.current = false;
+        }
       }
 
       // Consulta protegida de settings usando settingsService
@@ -523,11 +771,116 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const setFailures = (newFailures: PrintFailure[]) => {
-    setFailuresState(newFailures);
+  const addFailure = async (data: Omit<PrintFailure, 'id'>): Promise<boolean> => {
+    if (!user) return false;
     try {
-      localStorage.setItem('printflow_failures', JSON.stringify(newFailures));
-    } catch (e) {}
+      const row = failureToRow(data, user.id);
+      const { data: inserted, error } = await supabase
+        .from('failures')
+        .insert(row)
+        .select()
+        .single();
+
+      if (error) {
+        const sanitized = sanitizeErrorMessage(error.message || `Código ${error.code || 'desconhecido'}`);
+        setDbError(`Falha ao registrar perda: ${sanitized}`);
+        console.error('Erro ao inserir falha:', sanitized);
+        return false;
+      }
+
+      if (inserted) {
+        setFailuresState(prev => [rowToFailure(inserted), ...prev]);
+        return true;
+      }
+      return false;
+    } catch (err: any) {
+      const sanitized = sanitizeErrorMessage(err?.message || 'Falha de conexão');
+      setDbError(`Erro ao registrar falha: ${sanitized}`);
+      console.error('Exceção ao inserir falha:', sanitized);
+      return false;
+    }
+  };
+
+  const deleteFailure = async (id: string): Promise<boolean> => {
+    if (!user) return false;
+    try {
+      const { error } = await supabase
+        .from('failures')
+        .delete()
+        .eq('id', id)
+        .eq('user_id', user.id);
+
+      if (error) {
+        const sanitized = sanitizeErrorMessage(error.message || `Código ${error.code || 'desconhecido'}`);
+        setDbError(`Falha ao excluir registro de falha: ${sanitized}`);
+        console.error('Erro ao excluir falha:', sanitized);
+        return false;
+      }
+
+      setFailuresState(prev => prev.filter(f => f.id !== id));
+      return true;
+    } catch (err: any) {
+      const sanitized = sanitizeErrorMessage(err?.message || 'Falha de conexão');
+      setDbError(`Erro ao excluir registro de falha: ${sanitized}`);
+      console.error('Exceção ao excluir falha:', sanitized);
+      return false;
+    }
+  };
+
+  const addCashExpense = async (data: Omit<CashExpense, 'id' | 'createdAt'>): Promise<boolean> => {
+    if (!user) return false;
+    try {
+      const row = cashExpenseToRow(data, user.id);
+      const { data: inserted, error } = await supabase
+        .from('cash_expenses')
+        .insert(row)
+        .select()
+        .single();
+
+      if (error) {
+        const sanitized = sanitizeErrorMessage(error.message || `Código ${error.code || 'desconhecido'}`);
+        setDbError(`Falha ao registrar despesa: ${sanitized}`);
+        console.error('Erro ao inserir despesa:', sanitized);
+        return false;
+      }
+
+      if (inserted) {
+        setCashExpensesState(prev => [rowToCashExpense(inserted), ...prev]);
+        return true;
+      }
+      return false;
+    } catch (err: any) {
+      const sanitized = sanitizeErrorMessage(err?.message || 'Falha de conexão');
+      setDbError(`Erro ao registrar despesa: ${sanitized}`);
+      console.error('Exceção ao inserir despesa:', sanitized);
+      return false;
+    }
+  };
+
+  const deleteCashExpense = async (id: string): Promise<boolean> => {
+    if (!user) return false;
+    try {
+      const { error } = await supabase
+        .from('cash_expenses')
+        .delete()
+        .eq('id', id)
+        .eq('user_id', user.id);
+
+      if (error) {
+        const sanitized = sanitizeErrorMessage(error.message || `Código ${error.code || 'desconhecido'}`);
+        setDbError(`Falha ao excluir despesa: ${sanitized}`);
+        console.error('Erro ao excluir despesa:', sanitized);
+        return false;
+      }
+
+      setCashExpensesState(prev => prev.filter(e => e.id !== id));
+      return true;
+    } catch (err: any) {
+      const sanitized = sanitizeErrorMessage(err?.message || 'Falha de conexão');
+      setDbError(`Erro ao excluir despesa: ${sanitized}`);
+      console.error('Exceção ao excluir despesa:', sanitized);
+      return false;
+    }
   };
 
   const logout = async () => {
@@ -535,6 +888,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setUser(null);
     setSettingsConflict(null);
     setSettingsSyncState('synced');
+    setFailuresState([]);
+    setCashExpensesState([]);
+    migratedFailuresRef.current = false;
+    migratedExpensesRef.current = false;
   };
 
   return (
@@ -545,7 +902,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       filaments, setFilaments: setFilamentsState,
       printers, setPrinters: setPrintersState,
       supplies, setSupplies,
-      failures, setFailures,
+      failures, addFailure, deleteFailure,
+      cashExpenses, addCashExpense, deleteCashExpense,
       settings, setSettings, 
       settingsSyncState,
       settingsConflict,

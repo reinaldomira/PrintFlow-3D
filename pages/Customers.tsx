@@ -221,6 +221,20 @@ export const Customers: React.FC = () => {
       `*Pagamento:* ${order.paymentMethod || 'Pix'}\n\n` +
       `O arquivo PDF oficial está em anexo. Qualquer dúvida, estamos à disposição!`;
 
+    const waUrl = cleanPhone 
+      ? `https://wa.me/55${cleanPhone}?text=${encodeURIComponent(message)}` 
+      : `https://wa.me/?text=${encodeURIComponent(message)}`;
+
+    // Abre a conversa do WhatsApp imediatamente no clique do usuário para evitar bloqueio de popup
+    const waWindow = window.open(waUrl, '_blank');
+    if (!waWindow || waWindow.closed || typeof waWindow.closed === 'undefined') {
+      const a = document.createElement('a');
+      a.href = waUrl;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.click();
+    }
+
     try {
       const pdfBlob = await getQuotePdfBlob({
         order,
@@ -229,24 +243,22 @@ export const Customers: React.FC = () => {
         filaments,
         settings
       });
-      const file = new File([pdfBlob], filename, { type: 'application/pdf' });
 
-      // Se suportar compartilhamento direto de arquivo (ex: celular)
-      if (typeof navigator !== 'undefined' && navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({
-          title: `Orçamento ${orderNum} - ${companyName}`,
-          text: message,
-          files: [file]
-        });
-        return;
-      }
-
-      // Fallback no computador: baixa o PDF e abre a conversa
-      await downloadQuotePdf({ order, customer, parts, filaments, settings });
-      window.open(`https://wa.me/55${cleanPhone}?text=${encodeURIComponent(message)}`, '_blank');
+      // Baixa o PDF para anexar na conversa aberta
+      const url = URL.createObjectURL(pdfBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
     } catch (err: any) {
-      if (err.name !== 'AbortError') {
-        window.open(`https://wa.me/55${cleanPhone}?text=${encodeURIComponent(message)}`, '_blank');
+      console.warn('Aviso ao gerar PDF no envio WhatsApp:', err);
+      try {
+        await downloadQuotePdf({ order, customer, parts, filaments, settings });
+      } catch (dlErr) {
+        // Fallback já aberto no WhatsApp
       }
     }
   };

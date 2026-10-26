@@ -1,17 +1,14 @@
 
 import React, { useState, useEffect } from 'react';
-import { useApp } from '../context/AppContext';
 import { supabase } from '../services/supabase';
-import { Mail, Lock, LogIn, UserPlus, Loader2, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Mail, Lock, LogIn, Loader2, AlertCircle, CheckCircle2 } from 'lucide-react';
 
 const Login: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(true);
-  const [isRegistering, setIsRegistering] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [successNotice, setSuccessNotice] = useState<string | null>(null);
 
   // Carregar e-mail salvo ao iniciar
   useEffect(() => {
@@ -26,23 +23,16 @@ const Login: React.FC = () => {
     e.preventDefault();
     setLoading(true);
     setError(null);
-    setSuccessNotice(null);
 
     try {
-      if (isRegistering) {
-        const { error } = await supabase.auth.signUp({ email, password });
-        if (error) throw error;
-        setSuccessNotice('Conta criada com sucesso! Verifique seu e-mail para confirmar (se habilitado).');
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      
+      // Se login for bem sucedido, salvar ou remover o e-mail do localStorage
+      if (rememberMe) {
+        localStorage.setItem('printflow_remembered_email', email);
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-        
-        // Se login for bem sucedido, salvar ou remover o e-mail do localStorage
-        if (rememberMe) {
-          localStorage.setItem('printflow_remembered_email', email);
-        } else {
-          localStorage.removeItem('printflow_remembered_email');
-        }
+        localStorage.removeItem('printflow_remembered_email');
       }
     } catch (err: any) {
       setError(err.message || 'Erro ao processar solicitação');
@@ -76,13 +66,6 @@ const Login: React.FC = () => {
             <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-center gap-3 text-red-500 text-sm">
               <AlertCircle className="w-5 h-5 flex-shrink-0" />
               <p>{error}</p>
-            </div>
-          )}
-
-          {successNotice && (
-            <div className="mb-6 p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl flex items-center gap-3 text-emerald-400 text-sm">
-              <CheckCircle2 className="w-5 h-5 flex-shrink-0" />
-              <p>{successNotice}</p>
             </div>
           )}
 
@@ -144,21 +127,12 @@ const Login: React.FC = () => {
                 <Loader2 className="w-6 h-6 animate-spin" />
               ) : (
                 <>
-                  {isRegistering ? <UserPlus className="w-5 h-5" /> : <LogIn className="w-5 h-5" />}
-                  {isRegistering ? 'CRIAR CONTA CLOUD' : 'ENTRAR NO PRINTFLOW'}
+                  <LogIn className="w-5 h-5" />
+                  ENTRAR NO PRINTFLOW
                 </>
               )}
             </button>
           </form>
-
-          <div className="mt-8 text-center">
-            <button 
-              onClick={() => setIsRegistering(!isRegistering)}
-              className="text-emerald-500 font-bold hover:underline py-2"
-            >
-              {isRegistering ? 'Já tenho uma conta' : 'Criar uma conta nova'}
-            </button>
-          </div>
         </div>
         
         <p className="text-center text-zinc-600 text-[10px] font-bold uppercase tracking-widest">

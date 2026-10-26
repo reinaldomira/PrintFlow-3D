@@ -46,8 +46,6 @@ export const EXPENSE_PRESETS = [
   { desc: 'Peça de Reposição / Correia GT2', category: 'manutencao' as const, icon: '⚙️' }
 ];
 
-const INITIAL_FAILURES: PrintFailure[] = [];
-
 export const DEFAULT_DASHBOARD_CARDS: DashboardCardConfig[] = [
   { id: 'kpi_strip', title: 'Indicadores Chave (Faturamento, Lucro, Custos, Lotes)', category: 'kpi', visible: true, order: 0 },
   { id: 'widget_cash_flow', title: 'Fluxo de Caixa Real (Entradas vs. Saídas da Oficina)', category: 'kpi', visible: true, order: 1 },
@@ -63,7 +61,11 @@ export const DEFAULT_DASHBOARD_CARDS: DashboardCardConfig[] = [
 ];
 
 export const Dashboard: React.FC = () => {
-  const { orders, parts, filaments, printers, supplies, settings, user, dbError, failures, setFailures } = useApp();
+  const { 
+    orders, parts, filaments, printers, supplies, settings, user, dbError, 
+    failures, addFailure, deleteFailure, 
+    cashExpenses, addCashExpense, deleteCashExpense 
+  } = useApp();
   const navigate = useNavigate();
 
   // Persist selected month across navigation, defaulting to current month (mês vigente)
@@ -209,29 +211,8 @@ export const Dashboard: React.FC = () => {
   const [isFailureModalOpen, setIsFailureModalOpen] = useState(false);
   const [notificationOpen, setNotificationOpen] = useState(false);
 
-  // Real Cash Flow State (printflow_cash_expenses_${user?.id || 'guest'})
-  const expensesStorageKey = useMemo(() => `printflow_cash_expenses_${user?.id || 'guest'}`, [user?.id]);
-  const [cashExpenses, setCashExpenses] = useState<CashExpense[]>(() => {
-    try {
-      const stored = localStorage.getItem(`printflow_cash_expenses_${user?.id || 'guest'}`);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed)) return parsed;
-      }
-    } catch (e) {
-      // ignore
-    }
-    return [];
-  });
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(expensesStorageKey, JSON.stringify(cashExpenses));
-    } catch (e) {
-      // ignore
-    }
-  }, [cashExpenses, expensesStorageKey]);
-
+  const [isSavingFailure, setIsSavingFailure] = useState(false);
+  const [isSavingExpense, setIsSavingExpense] = useState(false);
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   const [isCashFlowExpanded, setIsCashFlowExpanded] = useState(false);
   const [statementFilter, setStatementFilter] = useState<'all' | 'inflow' | 'outflow'>('all');
@@ -241,30 +222,35 @@ export const Dashboard: React.FC = () => {
   const [expenseDate, setExpenseDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [expenseNotes, setExpenseNotes] = useState('');
 
-  const handleSaveExpense = (e: React.FormEvent) => {
+  const handleSaveExpense = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSavingExpense) return;
     const amt = Number(expenseAmount);
     if (!expenseDesc.trim() || isNaN(amt) || amt <= 0) return;
 
-    const newExp: CashExpense = {
-      id: `exp-${Date.now()}`,
-      description: expenseDesc.trim(),
-      amount: amt,
-      category: expenseCategory,
-      date: expenseDate || new Date().toISOString().split('T')[0],
-      notes: expenseNotes.trim() || undefined,
-      createdAt: new Date().toISOString()
-    };
+    setIsSavingExpense(true);
+    try {
+      const ok = await addCashExpense({
+        description: expenseDesc.trim(),
+        amount: amt,
+        category: expenseCategory,
+        date: expenseDate || new Date().toISOString().split('T')[0],
+        notes: expenseNotes.trim() || undefined
+      });
 
-    setCashExpenses(prev => [newExp, ...prev]);
-    setIsExpenseModalOpen(false);
-    setExpenseDesc('');
-    setExpenseAmount('');
-    setExpenseNotes('');
+      if (ok) {
+        setIsExpenseModalOpen(false);
+        setExpenseDesc('');
+        setExpenseAmount('');
+        setExpenseNotes('');
+      }
+    } finally {
+      setIsSavingExpense(false);
+    }
   };
 
-  const handleDeleteExpense = (id: string) => {
-    setCashExpenses(prev => prev.filter(e => e.id !== id));
+  const handleDeleteExpense = async (id: string) => {
+    await deleteCashExpense(id);
   };
 
   // Failure Form State
@@ -813,32 +799,39 @@ export const Dashboard: React.FC = () => {
   }, [failures]);
 
   // Handle saving failure
-  const handleSaveFailure = (e: React.FormEvent) => {
+  const handleSaveFailure = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSavingFailure) return;
+
     const printerObj = printers.find(p => p.id === failPrinter);
     const filObj = filaments.find(f => f.id === failFilament);
 
-    const newFailure: PrintFailure = {
-      id: `fail-${Date.now()}`,
-      printerId: failPrinter || undefined,
-      printerName: printerObj ? `${printerObj.brand} ${printerObj.model}` : (failPrinter || 'Bambu 01'),
-      reason: failReason,
-      filamentId: failFilament || undefined,
-      filamentName: filObj ? `${filObj.brand} ${filObj.material} (${filObj.colorName})` : undefined,
-      gramsLost: Number(failGrams) || 0,
-      printTimeHoursLost: Number(failHours) || 0,
-      costLost: calculatedFailCost,
-      date: new Date().toISOString().split('T')[0],
-      notes: failNotes
-    };
+    setIsSavingFailure(true);
+    try {
+      const ok = await addFailure({
+        printerId: failPrinter || undefined,
+        printerName: printerObj ? `${printerObj.brand} ${printerObj.model}` : (failPrinter || 'Bambu 01'),
+        reason: failReason,
+        filamentId: failFilament || undefined,
+        filamentName: filObj ? `${filObj.brand} ${filObj.material} (${filObj.colorName})` : undefined,
+        gramsLost: Number(failGrams) || 0,
+        printTimeHoursLost: Number(failHours) || 0,
+        costLost: calculatedFailCost,
+        date: new Date().toISOString().split('T')[0],
+        notes: failNotes.trim() || undefined
+      });
 
-    setFailures(prev => [newFailure, ...prev]);
-    setIsFailureModalOpen(false);
-    setFailNotes('');
+      if (ok) {
+        setIsFailureModalOpen(false);
+        setFailNotes('');
+      }
+    } finally {
+      setIsSavingFailure(false);
+    }
   };
 
-  const handleDeleteFailure = (id: string) => {
-    setFailures(prev => prev.filter(f => f.id !== id));
+  const handleDeleteFailure = async (id: string) => {
+    await deleteFailure(id);
   };
 
   if (dbError) {
@@ -2300,9 +2293,10 @@ export const Dashboard: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl text-xs font-bold bg-rose-500 hover:bg-rose-600 text-white shadow-lg shadow-rose-500/20 active:scale-95 transition-all"
+                  disabled={isSavingFailure}
+                  className="px-5 py-2 rounded-xl text-xs font-bold bg-rose-500 hover:bg-rose-600 disabled:opacity-50 text-white shadow-lg shadow-rose-500/20 active:scale-95 transition-all"
                 >
-                  Salvar Registro de Falha
+                  {isSavingFailure ? 'Salvando...' : 'Salvar Registro de Falha'}
                 </button>
               </div>
             </form>
@@ -2436,9 +2430,10 @@ export const Dashboard: React.FC = () => {
               <button
                 type="submit"
                 form="cash-expense-form"
-                className="px-5 py-2 rounded-xl text-xs font-bold bg-rose-500 hover:bg-rose-600 text-white shadow-lg shadow-rose-500/20 active:scale-95 transition-all"
+                disabled={isSavingExpense}
+                className="px-5 py-2 rounded-xl text-xs font-bold bg-rose-500 hover:bg-rose-600 disabled:opacity-50 text-white shadow-lg shadow-rose-500/20 active:scale-95 transition-all"
               >
-                Registrar Saída no Caixa
+                {isSavingExpense ? 'Registrando...' : 'Registrar Saída no Caixa'}
               </button>
             </div>
           </div>

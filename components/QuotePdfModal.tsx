@@ -166,43 +166,57 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
   };
 
   /**
-   * Envia o PDF diretamente pelo WhatsApp:
-   * 1. No celular ou dispositivos com suporte (Web Share API): anexa o arquivo PDF diretamente para envio no WhatsApp.
-   * 2. No computador / navegadores sem envio nativo de arquivos: faz o download automático do PDF e abre a conversa do WhatsApp do cliente com o resumo pronto para arrastar/anexar o arquivo.
+   * Envia o PDF e proposta técnica pelo WhatsApp:
+   * 1. Monta a mensagem completa com dados do cliente, itens, total e Pix.
+   * 2. Abre a conversa no WhatsApp IMEDIATAMENTE (no clique direto do usuário para evitar bloqueio de pop-up pelo navegador).
+   * 3. Faz o download do arquivo PDF oficial para a máquina/celular do usuário anexar na conversa.
    */
   const handleSendWhatsAppPdf = async () => {
+    setIsSharingWhatsApp(true);
+    setWhatsAppNotice(null);
+
+    const phone = customer?.phone?.replace(/\D/g, '') || business.whatsapp?.replace(/\D/g, '') || '';
+    const orderNum = getRealisticOrderNumber(activeOrder);
+    const filename = `Orcamento_${orderNum.replace('#', '')}.pdf`;
+
+    const itemsSummary = (activeOrder.items || []).map(i => {
+      const part = parts.find(p => p.id === i.partId);
+      return `• ${i.quantity}x ${i.name || part?.name || 'Item 3D'} - ${formatCurrency((Number(i.unitPrice) || 0) * (Number(i.quantity) || 1))}`;
+    }).join('\n');
+
+    const pixSummary = (isPix && hasPixConfigured)
+      ? `\n*DADOS PARA PAGAMENTO VIA PIX:*\n` +
+        `• *Chave:* ${formatPixKeyForDisplay(business.pixKey || '', business.pixKeyType || 'cpf')} (${getPixKeyTypeLabel(business.pixKeyType)})\n` +
+        `• *Titular:* ${business.pixReceiverName || companyName}\n` +
+        (business.pixBank ? `• *Banco:* ${business.pixBank}\n` : '')
+      : '';
+
+    const textMessage = 
+      `Olá ${customer?.name || 'Cliente'}! Segue a proposta técnica de orçamento da *${companyName}*:\n\n` +
+      `*Orçamento:* ${orderNumStr}\n` +
+      `*Data de Emissão:* ${emissionDate}\n\n` +
+      `*Itens:* \n${itemsSummary}\n\n` +
+      (discount > 0 ? `*Desconto em Lote:* -${formatCurrency(discount)}\n` : '') +
+      `*VALOR TOTAL:* ${formatCurrency(total)}\n` +
+      `*Condição de Pagamento:* ${currentPaymentMethod || 'Pix'}\n` +
+      pixSummary +
+      `\nO documento oficial em PDF com especificações e QR Code para pagamento está sendo anexado. Qualquer dúvida estamos à disposição!`;
+
+    const encodedText = encodeURIComponent(textMessage);
+    const waUrl = phone ? `https://wa.me/55${phone}?text=${encodedText}` : `https://wa.me/?text=${encodedText}`;
+
+    // 1. Abre a conversa do WhatsApp imediatamente no clique do usuário (evita bloqueio de popup)
+    const waWindow = window.open(waUrl, '_blank');
+    if (!waWindow || waWindow.closed || typeof waWindow.closed === 'undefined') {
+      const a = document.createElement('a');
+      a.href = waUrl;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.click();
+    }
+
     try {
-      setIsSharingWhatsApp(true);
-      setWhatsAppNotice(null);
-
-      const phone = customer?.phone?.replace(/\D/g, '') || business.whatsapp?.replace(/\D/g, '') || '';
-      const orderNum = getRealisticOrderNumber(activeOrder);
-      const filename = `Orcamento_${orderNum.replace('#', '')}.pdf`;
-
-      const itemsSummary = (activeOrder.items || []).map(i => {
-        const part = parts.find(p => p.id === i.partId);
-        return `• ${i.quantity}x ${i.name || part?.name || 'Item 3D'} - ${formatCurrency(i.unitPrice * i.quantity)}`;
-      }).join('\n');
-
-      const pixSummary = (isPix && hasPixConfigured)
-        ? `\n*DADOS PARA PAGAMENTO VIA PIX:*\n` +
-          `• *Chave:* ${formatPixKeyForDisplay(business.pixKey || '', business.pixKeyType || 'cpf')} (${getPixKeyTypeLabel(business.pixKeyType)})\n` +
-          `• *Titular:* ${business.pixReceiverName || companyName}\n` +
-          (business.pixBank ? `• *Banco:* ${business.pixBank}\n` : '')
-        : '';
-
-      const textMessage = 
-        `Olá ${customer?.name || 'Cliente'}! Segue em anexo a proposta técnica de orçamento da *${companyName}*:\n\n` +
-        `*Orçamento:* ${orderNumStr}\n` +
-        `*Data de Emissão:* ${emissionDate}\n\n` +
-        `*Itens:* \n${itemsSummary}\n\n` +
-        (discount > 0 ? `*Desconto em Lote:* -${formatCurrency(discount)}\n` : '') +
-        `*VALOR TOTAL:* ${formatCurrency(total)}\n` +
-        `*Condição de Pagamento:* ${currentPaymentMethod || 'Pix'}\n` +
-        pixSummary +
-        `\nO PDF detalhado com especificações técnicas e QR Code oficial para pagamento está em anexo. Qualquer dúvida estamos à disposição!`;
-
-      // 1. Gera o blob binário do PDF oficial
+      // 2. Gera o blob binário do PDF e inicia o download para anexar no WhatsApp
       const pdfBlob = await getQuotePdfBlob({
         order: activeOrder,
         customer,
@@ -211,33 +225,28 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
         settings
       });
 
-      const file = new File([pdfBlob], filename, { type: 'application/pdf' });
-
-      // 2. Se o navegador suporta compartilhamento direto de arquivos (Android, iOS Safari, etc.)
-      if (typeof navigator !== 'undefined' && navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({
-          title: `Orçamento ${orderNumStr} - ${companyName}`,
-          text: textMessage,
-          files: [file]
-        });
-        return;
-      }
-
-      // 3. Fallback inteligente para Desktop: Baixa o PDF no computador e abre a conversa no WhatsApp
-      await downloadQuotePdf({ order: activeOrder, customer, parts, filaments, settings });
-
-      const encodedText = encodeURIComponent(textMessage);
-      const waUrl = phone ? `https://wa.me/55${phone}?text=${encodedText}` : `https://wa.me/?text=${encodedText}`;
-      window.open(waUrl, '_blank');
+      const url = URL.createObjectURL(pdfBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
 
       setWhatsAppNotice(
-        `O PDF (${filename}) foi baixado automaticamente e a conversa do WhatsApp com ${customer?.name || 'o cliente'} foi aberta! Basta arrastar o arquivo PDF baixado para a conversa ou clicar no ícone de anexo (📎) para enviar.`
+        `Conversa do WhatsApp aberta e PDF (${filename}) baixado com sucesso! Basta arrastar o arquivo PDF baixado para a conversa ou clicar no ícone de anexo (📎) para enviar.`
       );
     } catch (err: any) {
-      if (err.name !== 'AbortError') {
-        console.error('Erro ao compartilhar PDF:', err);
-        alert('Não foi possível compartilhar o arquivo diretamente. Clique em "Baixar PDF" para salvar e enviar manualmente.');
+      console.warn('Aviso no fluxo do WhatsApp ao gerar PDF:', err);
+      try {
+        await downloadQuotePdf({ order: activeOrder, customer, parts, filaments, settings });
+      } catch (fallbackErr) {
+        console.warn('Fallback de download falhou:', fallbackErr);
       }
+      setWhatsAppNotice(
+        `Conversa do WhatsApp aberta com o orçamento! Se o arquivo não baixou automaticamente, clique no botão "Baixar PDF" acima.`
+      );
     } finally {
       setIsSharingWhatsApp(false);
     }

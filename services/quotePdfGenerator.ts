@@ -92,15 +92,21 @@ async function getImageDataUrl(url?: string): Promise<string | null> {
   }
 
   try {
-    const res = await fetch(fetchUrl, { mode: 'cors' });
-    if (!res.ok) return null;
-    const blob = await res.blob();
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string);
-      reader.onerror = () => resolve(null);
-      reader.readAsDataURL(blob);
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    try {
+      const res = await fetch(fetchUrl, { mode: 'cors', signal: controller.signal });
+      if (!res.ok) return null;
+      const blob = await res.blob();
+      return await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(blob);
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
   } catch (err) {
     console.warn('Não foi possível carregar imagem para o PDF (mantendo geração limpa):', err);
     return null;
@@ -238,14 +244,19 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
   // Pré-carrega logo se existir
   const logoData = await getImageDataUrl(business.logoUrl);
 
-  // Pré-carrega miniaturas das peças
+  // Pré-carrega miniaturas das peças em paralelo
   const itemImages: Record<string, string | null> = {};
-  for (const item of order.items || []) {
-    const part = parts.find(p => p.id === item.partId);
-    if (part?.imageUrl && !itemImages[part.imageUrl]) {
-      itemImages[part.imageUrl] = await getImageDataUrl(part.imageUrl);
-    }
-  }
+  const uniqueImageUrls = Array.from(new Set(
+    (order.items || [])
+      .map(i => parts.find(p => p.id === i.partId)?.imageUrl)
+      .filter((url): url is string => !!url)
+  ));
+  
+  await Promise.all(
+    uniqueImageUrls.map(async (url) => {
+      itemImages[url] = await getImageDataUrl(url);
+    })
+  );
 
   let currentY = 10;
 
