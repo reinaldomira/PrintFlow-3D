@@ -1,8 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
-import { formatCurrency } from '../constants';
-import { calculateSalePrice } from '../utils/pricingCalculator';
-import { Filament, Printer, Supply } from '../types';
+import { formatCurrency, calculatePartCosts } from '../constants';
+import { Part, Filament, Printer, Supply } from '../types';
 import { 
   Zap, X, Copy, Check, MessageCircle, ShoppingBag, Plus, Trash2, 
   Clock, Scale, Sparkles, DollarSign, CheckCircle2, ChevronRight,
@@ -44,12 +43,13 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({ isOpen, onClos
   const [weightGrams, setWeightGrams] = useState<number | ''>(85);
   const [printHours, setPrintHours] = useState<number | ''>(4);
   const [printMinutes, setPrintMinutes] = useState<number | ''>(30);
+  const [finishingMinutes, setFinishingMinutes] = useState<number | ''>(0);
   const [selectedFilamentId, setSelectedFilamentId] = useState<string>('');
   const [selectedPrinterId, setSelectedPrinterId] = useState<string>('');
   const [profitMargin, setProfitMargin] = useState<number>(() => settings.defaultProfitMargin ?? 100);
   const [paymentType, setPaymentType] = useState<'pix' | 'card' | 'marketplace'>('pix');
   const [deadlineDays, setDeadlineDays] = useState<string>('1 a 2 dias úteis');
-  const [includePackaging, setIncludePackaging] = useState<boolean>(true);
+  const [includePackaging, setIncludePackaging] = useState<boolean>(false);
 
   // Cliente opcional para personalizar mensagem
   const [customerName, setCustomerName] = useState('');
@@ -91,69 +91,76 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({ isOpen, onClos
     return printers.find(p => p.id === selectedPrinterId) || printers[0] || null;
   }, [printers, selectedPrinterId]);
 
-  // Cálculos de custos de fabricação
+  // Cálculos de custos de fabricação 100% alinhados com o Catálogo (Nova Peça)
   const quoteCalculation = useMemo(() => {
     const qty = Math.max(1, Math.round(Number(quantity) || 1));
     const grams = Number(weightGrams) || 0;
     const totalGrams = grams * qty;
+    const finishingHours = (Number(finishingMinutes) || 0) / 60;
 
-    // 1. Custo de Filamento
+    // Constrói peça virtual para aplicar a mesma função analítica de "Nova Peça"
+    const virtualPart: Partial<Part> = {
+      name: partName,
+      weight: grams,
+      printTime: totalPrintHours,
+      unitsPerPrint: 1,
+      printerId: selectedPrinterId || printers[0]?.id || undefined,
+      recipe: selectedFilamentId ? [{ filamentId: selectedFilamentId, grams }] : [],
+      supplies: additionalSupplies.filter(s => s.supplyId).map(s => ({ supplyId: s.supplyId!, quantity: s.quantity })),
+      wastePercent: 5, // Padrão exato do catálogo
+      postProcessingTime: finishingHours,
+      profitMargin: profitMargin
+    };
+
+    const partCosts = calculatePartCosts(virtualPart, filaments, printers, settings, supplies);
+
+    // Insumos avulsos adicionais (sem supplyId cadastrado no banco)
+    const manualSuppliesUnitCost = additionalSupplies
+      .filter(s => !s.supplyId)
+      .reduce((acc, row) => acc + ((Number(row.unitCost) || 0) * (Number(row.quantity) || 0)), 0);
+
+    const filamentCost = Number((partCosts.unitMaterialCost * qty).toFixed(2));
+    const energyCost = Number((partCosts.unitEnergyCost * qty).toFixed(2));
+    const maintenanceCost = Number((partCosts.unitMaintenanceCost * qty).toFixed(2));
+    const laborCost = Number((partCosts.unitLaborCost * qty).toFixed(2));
+    const wasteCost = Number((partCosts.unitWasteCost * qty).toFixed(2));
+    const suppliesCost = Number(((partCosts.unitSuppliesCost + manualSuppliesUnitCost) * qty).toFixed(2));
+
+    const manufacturingCostUnit = Number((partCosts.unitTotalCost + manualSuppliesUnitCost).toFixed(2));
+    const manufacturingCostTotal = Number((manufacturingCostUnit * qty).toFixed(2));
+
+    // Preço Base Sugerido da Peça (Exatamente a mesma regra de markup da Nova Peça)
+    const baseUnitPrice = Number((manufacturingCostUnit * (1 + (profitMargin / 100))).toFixed(2));
+    const baseTotalPrice = Number((baseUnitPrice * qty).toFixed(2));
+
+    // Embalagem adicional (opcional e explícita)
+    const packagingCostUnit = includePackaging ? (settings.defaultPackagingCost ?? 2.50) : 0;
+    const packagingCostTotal = Number((packagingCostUnit * qty).toFixed(2));
+
+    // Ajuste proporcional para taxas de pagamento (se não for Pix à vista)
+    let feePercent = 0;
+    if (paymentType === 'card') {
+      feePercent = (settings.defaultPaymentFeePercent ?? 3.99) / 100;
+    } else if (paymentType === 'marketplace') {
+      feePercent = ((settings.defaultMarketplaceFeePercent ?? 14.0) + (settings.defaultTaxPercent ?? 6.0)) / 100;
+    }
+
+    const divisor = 1 - feePercent;
+    const fatorTaxas = divisor > 0 ? (1 / divisor) : 1;
+
+    const finalSalePrice = Number(((baseTotalPrice + packagingCostTotal) * fatorTaxas).toFixed(2));
+    const unitSalePrice = Number((finalSalePrice / qty).toFixed(2));
+
+    const totalFeesAmount = Number((finalSalePrice * feePercent).toFixed(2));
+    const netProfit = Number((finalSalePrice - manufacturingCostTotal - packagingCostTotal - totalFeesAmount).toFixed(2));
+    const baseCostWithPackaging = manufacturingCostTotal + packagingCostTotal;
+    const profitMarginEffective = baseCostWithPackaging > 0
+      ? Number(((netProfit / baseCostWithPackaging) * 100).toFixed(1))
+      : profitMargin;
+
     const pricePerKg = activeFilament 
       ? ((activeFilament.pricePaid || 100) / (activeFilament.weight || 1000)) * 1000
       : (settings.defaultFilamentCost || 120);
-    const costPerGram = pricePerKg / 1000;
-    const filamentCost = costPerGram * totalGrams;
-
-    // 2. Custo de Energia
-    const powerWatts = activePrinter?.power ?? 350;
-    const energyKWhPrice = settings.defaultEnergyCost || 0.85;
-    const energyKWh = (powerWatts / 1000) * totalPrintHours * qty;
-    const energyCost = energyKWh * energyKWhPrice;
-
-    // 3. Custo de Desgaste / Manutenção da Máquina
-    const maintenanceRate = settings.hourlyMaintenanceCost || 1.50;
-    const maintenanceCost = totalPrintHours * qty * maintenanceRate;
-
-    // 4. Mão de Obra
-    const laborRate = settings.hourlyLaborRate || 25;
-    // Estimativa de 15 minutos de preparação humana por modelo/impressão
-    const laborCost = 0.25 * laborRate;
-
-    // 5. Taxa de Perda / Risco 3D (padrão 8%)
-    const printSubtotal = filamentCost + energyCost + maintenanceCost;
-    const wasteCost = printSubtotal * 0.08;
-
-    // 6. Custo de Insumos Adicionais
-    const suppliesCost = additionalSupplies.reduce((acc, row) => {
-      return acc + ((Number(row.unitCost) || 0) * (Number(row.quantity) || 0));
-    }, 0);
-
-    // Custo Total de Fabricação
-    const manufacturingCostTotal = filamentCost + energyCost + maintenanceCost + laborCost + wasteCost + suppliesCost;
-    const manufacturingCostUnit = manufacturingCostTotal / qty;
-
-    // Taxas financeiras
-    const feePercent = paymentType === 'card' 
-      ? (settings.defaultPaymentFeePercent ?? 3.99)
-      : paymentType === 'marketplace'
-      ? (settings.defaultMarketplaceFeePercent ?? 14.0)
-      : 0;
-
-    const packagingCost = includePackaging ? ((settings.defaultPackagingCost ?? 2.50) * qty) : 0;
-
-    // Formação de Preço de Venda
-    const pricing = calculateSalePrice({
-      custoProducao: manufacturingCostTotal,
-      quantidade: qty,
-      embalagem: packagingCost,
-      embalagemPorUnidade: false,
-      outrosCustos: 0,
-      imposto: paymentType === 'marketplace' ? (settings.defaultTaxPercent ?? 6) : 0,
-      taxaPagamento: feePercent,
-      margemLucro: profitMargin,
-      arredondamentoComercial: true,
-      repassarTaxas: true
-    });
 
     return {
       qty,
@@ -166,18 +173,19 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({ isOpen, onClos
       laborCost,
       wasteCost,
       suppliesCost,
-      packagingCost,
+      packagingCost: packagingCostTotal,
       manufacturingCostTotal,
       manufacturingCostUnit,
       pricePerKg,
-      finalSalePrice: pricing.totalFinal,
-      unitSalePrice: pricing.precoUnitarioFinal,
-      netProfit: pricing.lucroLiquido,
-      profitMarginEffective: pricing.margemEfetiva
+      finalSalePrice,
+      unitSalePrice,
+      netProfit,
+      profitMarginEffective
     };
   }, [
-    quantity, weightGrams, totalPrintHours, activeFilament, activePrinter,
-    settings, additionalSupplies, paymentType, includePackaging, profitMargin
+    quantity, weightGrams, totalPrintHours, finishingMinutes, selectedFilamentId,
+    selectedPrinterId, activeFilament, printers, filaments, supplies, settings,
+    additionalSupplies, paymentType, includePackaging, profitMargin
   ]);
 
   // Mensagem gerada para WhatsApp
@@ -203,7 +211,7 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({ isOpen, onClos
       `💰 *VALOR TOTAL:* ${formatCurrency(quoteCalculation.finalSalePrice)}${quoteCalculation.qty > 1 ? ` (${formatCurrency(quoteCalculation.unitSalePrice)} cada)` : ''}`,
       `💳 *Forma de Pagamento:* ${paymentType === 'pix' ? 'Pix à vista (Sem taxas)' : paymentType === 'card' ? 'Cartão de Crédito/Débito' : 'Link de Pagamento / Marketplace'}${paymentType === 'pix' ? pixText : ''}`,
       ``,
-      `✅ *Incluso:* Fabricação aditiva de alta precisão, conferência dimensional e embalagem protetora.`,
+      `✅ *Incluso:* Fabricação aditiva de alta precisão, conferência dimensional${includePackaging ? ' e embalagem protetora' : ''}.`,
       ``,
       `Ficou com alguma dúvida ou gostaria de aprovar para iniciarmos a produção agora?`
     ];
@@ -211,7 +219,7 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({ isOpen, onClos
     return lines.join('\n');
   }, [
     settings.businessInfo, customerName, partName, quoteCalculation,
-    activeFilament, totalPrintHours, deadlineDays, paymentType
+    activeFilament, totalPrintHours, deadlineDays, paymentType, includePackaging
   ]);
 
   const handleCopyWhatsAppText = async () => {
@@ -382,15 +390,15 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({ isOpen, onClos
                 <span>Dados Obtidos do Fatiador (Bambu / Cura / Prusa)</span>
               </span>
 
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 {/* Peso em Gramas */}
                 <div>
                   <label className="text-[11px] font-bold text-zinc-400 block mb-1">
-                    Peso Unitário (g):
+                    Peso Unitário:
                   </label>
                   <div className="relative">
                     <input 
-                      type="number"
+                      type="number" 
                       step="1"
                       min="1"
                       value={weightGrams}
@@ -405,7 +413,7 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({ isOpen, onClos
                 {/* Tempo de Impressão */}
                 <div>
                   <label className="text-[11px] font-bold text-zinc-400 block mb-1">
-                    Tempo de Máquina:
+                    Tempo Máquina:
                   </label>
                   <div className="flex gap-1">
                     <div className="relative flex-1">
@@ -431,6 +439,24 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({ isOpen, onClos
                       />
                       <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-zinc-500 text-[10px] font-bold">m</span>
                     </div>
+                  </div>
+                </div>
+
+                {/* Mão de Obra / Pós-processamento (Opcional) */}
+                <div>
+                  <label className="text-[11px] font-bold text-zinc-400 block mb-1" title="Tempo humano gasto em suporte, lixa, montagem ou acabamento">
+                    Pós-cura/Acabam.:
+                  </label>
+                  <div className="relative">
+                    <input 
+                      type="number"
+                      min="0"
+                      value={finishingMinutes}
+                      onChange={e => setFinishingMinutes(e.target.value === '' ? '' : Math.max(0, Number(e.target.value)))}
+                      placeholder="0"
+                      className="w-full bg-zinc-900 border border-zinc-700 rounded-xl pl-2 pr-7 py-2.5 text-sm font-bold text-white outline-none focus:border-emerald-500 text-center"
+                    />
+                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 text-[10px] font-bold">min</span>
                   </div>
                 </div>
 
@@ -709,6 +735,31 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({ isOpen, onClos
                 />
               </div>
             </div>
+
+            {/* Checkbox de Embalagem */}
+            <div className="p-3 bg-zinc-950/60 border border-zinc-800 rounded-xl flex items-center justify-between gap-2">
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={includePackaging}
+                  onChange={e => setIncludePackaging(e.target.checked)}
+                  className="w-4 h-4 rounded border-zinc-700 bg-zinc-800 text-emerald-500 focus:ring-0 cursor-pointer"
+                />
+                <div>
+                  <span className="text-xs font-bold text-zinc-200 block">
+                    Incluir Embalagem / Envio (+{formatCurrency(settings.defaultPackagingCost ?? 2.50)}/un)
+                  </span>
+                  <span className="text-[10px] text-zinc-500 block">
+                    Desmarcado por padrão para equiparar 100% com o preço de catálogo da peça
+                  </span>
+                </div>
+              </label>
+              {includePackaging && (
+                <span className="text-xs font-mono font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">
+                  +{formatCurrency(quoteCalculation.packagingCost)}
+                </span>
+              )}
+            </div>
           </div>
 
           {/* ======================================================== */}
@@ -755,14 +806,34 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({ isOpen, onClos
                   <span>⚡ Energia ({quoteCalculation.totalPrintHours}h de mesa/bico):</span>
                   <span className="font-mono text-zinc-200">{formatCurrency(quoteCalculation.energyCost)}</span>
                 </div>
-                <div className="flex justify-between text-zinc-400">
-                  <span>⚙️ Desgaste & Manutenção:</span>
-                  <span className="font-mono text-zinc-200">{formatCurrency(quoteCalculation.maintenanceCost)}</span>
-                </div>
+                {quoteCalculation.maintenanceCost > 0 && (
+                  <div className="flex justify-between text-zinc-400">
+                    <span>⚙️ Desgaste & Manutenção:</span>
+                    <span className="font-mono text-zinc-200">{formatCurrency(quoteCalculation.maintenanceCost)}</span>
+                  </div>
+                )}
+                {quoteCalculation.laborCost > 0 && (
+                  <div className="flex justify-between text-zinc-400">
+                    <span>🖐️ Pós-cura / Acabamento:</span>
+                    <span className="font-mono text-zinc-200">{formatCurrency(quoteCalculation.laborCost)}</span>
+                  </div>
+                )}
+                {quoteCalculation.wasteCost > 0 && (
+                  <div className="flex justify-between text-zinc-400">
+                    <span>🛡️ Risco / Perda 3D (5%):</span>
+                    <span className="font-mono text-zinc-200">{formatCurrency(quoteCalculation.wasteCost)}</span>
+                  </div>
+                )}
                 {quoteCalculation.suppliesCost > 0 && (
                   <div className="flex justify-between text-orange-400">
                     <span>📦 Componentes / Insumos:</span>
                     <span className="font-mono text-orange-300">{formatCurrency(quoteCalculation.suppliesCost)}</span>
+                  </div>
+                )}
+                {quoteCalculation.packagingCost > 0 && (
+                  <div className="flex justify-between text-emerald-400">
+                    <span>📬 Embalagem & Envio:</span>
+                    <span className="font-mono text-emerald-300">{formatCurrency(quoteCalculation.packagingCost)}</span>
                   </div>
                 )}
                 <div className="flex justify-between text-zinc-300 font-bold pt-1.5 border-t border-zinc-800">
