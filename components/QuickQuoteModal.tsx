@@ -390,13 +390,13 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({ isOpen, onClos
                 <span>Dados Obtidos do Fatiador (Bambu / Cura / Prusa)</span>
               </span>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-12 gap-2.5 sm:gap-3">
                 {/* Peso em Gramas */}
-                <div>
-                  <label className="text-[11px] font-bold text-zinc-400 block mb-1">
+                <div className="col-span-1 sm:col-span-3 sm:order-1">
+                  <label className="text-[11px] font-bold text-zinc-400 block mb-1 truncate">
                     Peso Unitário:
                   </label>
-                  <div className="relative">
+                  <div className="flex items-center bg-zinc-900 border border-zinc-700 rounded-xl px-2.5 py-1 focus-within:border-emerald-500 transition-colors">
                     <input 
                       type="number" 
                       step="1"
@@ -404,74 +404,80 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({ isOpen, onClos
                       value={weightGrams}
                       onChange={e => setWeightGrams(e.target.value === '' ? '' : Math.max(0, Number(e.target.value)))}
                       placeholder="85"
-                      className="w-full bg-zinc-900 border border-zinc-700 rounded-xl pl-3 pr-7 py-2.5 text-sm font-bold text-white outline-none focus:border-emerald-500"
+                      className="w-full bg-transparent py-1.5 text-sm font-bold text-white outline-none min-w-0 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                     />
-                    <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 font-bold text-xs">g</span>
+                    <span className="text-zinc-500 font-bold text-xs pl-1 select-none pointer-events-none">g</span>
                   </div>
                 </div>
 
-                {/* Tempo de Impressão */}
-                <div>
-                  <label className="text-[11px] font-bold text-zinc-400 block mb-1">
+                {/* Quantidade no Mobile fica ao lado de Peso; no Desktop vai para a última coluna */}
+                <div className="col-span-1 sm:col-span-2 sm:order-4">
+                  <label className="text-[11px] font-bold text-zinc-400 block mb-1 truncate">
+                    Quantidade:
+                  </label>
+                  <div className="flex items-center bg-zinc-900 border border-zinc-700 rounded-xl px-2.5 py-1 focus-within:border-emerald-500 transition-colors">
+                    <input 
+                      type="number"
+                      min="1"
+                      value={quantity}
+                      onChange={e => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
+                      className="w-full bg-transparent py-1.5 text-sm font-bold text-white outline-none min-w-0 text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                    />
+                    <span className="text-zinc-500 text-[10px] font-bold pl-1 select-none pointer-events-none">un</span>
+                  </div>
+                </div>
+
+                {/* Tempo de Impressão (Amplo no Desktop e Mobile, sem cortar números) */}
+                <div className="col-span-2 sm:col-span-4 sm:order-2">
+                  <label className="text-[11px] font-bold text-zinc-400 block mb-1 truncate">
                     Tempo Máquina:
                   </label>
-                  <div className="flex gap-1">
-                    <div className="relative flex-1">
+                  <div className="flex items-center gap-1.5">
+                    {/* Horas */}
+                    <div className="flex-1 flex items-center bg-zinc-900 border border-zinc-700 rounded-xl px-2.5 py-1 focus-within:border-emerald-500 transition-colors min-w-0">
                       <input 
                         type="number"
                         min="0"
                         value={printHours}
                         onChange={e => setPrintHours(e.target.value === '' ? '' : Math.max(0, Number(e.target.value)))}
-                        placeholder="4"
-                        className="w-full bg-zinc-900 border border-zinc-700 rounded-xl pl-2 pr-5 py-2.5 text-sm font-bold text-white outline-none focus:border-emerald-500 text-center"
+                        placeholder="0"
+                        className="w-full bg-transparent py-1.5 text-sm font-bold text-white outline-none min-w-0 text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                       />
-                      <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-zinc-500 text-[10px] font-bold">h</span>
+                      <span className="text-zinc-500 text-xs font-bold pl-1 select-none pointer-events-none">h</span>
                     </div>
-                    <div className="relative flex-1">
+
+                    {/* Minutos */}
+                    <div className="flex-1 flex items-center bg-zinc-900 border border-zinc-700 rounded-xl px-2.5 py-1 focus-within:border-emerald-500 transition-colors min-w-0">
                       <input 
                         type="number"
                         min="0"
                         max="59"
                         value={printMinutes}
                         onChange={e => setPrintMinutes(e.target.value === '' ? '' : Math.max(0, Math.min(59, Number(e.target.value))))}
-                        placeholder="30"
-                        className="w-full bg-zinc-900 border border-zinc-700 rounded-xl pl-2 pr-5 py-2.5 text-sm font-bold text-white outline-none focus:border-emerald-500 text-center"
+                        placeholder="0"
+                        className="w-full bg-transparent py-1.5 text-sm font-bold text-white outline-none min-w-0 text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                       />
-                      <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-zinc-500 text-[10px] font-bold">m</span>
+                      <span className="text-zinc-500 text-xs font-bold pl-1 select-none pointer-events-none">m</span>
                     </div>
                   </div>
                 </div>
 
                 {/* Mão de Obra / Pós-processamento (Opcional) */}
-                <div>
-                  <label className="text-[11px] font-bold text-zinc-400 block mb-1" title="Tempo humano gasto em suporte, lixa, montagem ou acabamento">
+                <div className="col-span-2 sm:col-span-3 sm:order-3">
+                  <label className="text-[11px] font-bold text-zinc-400 block mb-1 truncate" title="Tempo humano gasto em pós-cura, acabamento ou montagem">
                     Pós-cura/Acabam.:
                   </label>
-                  <div className="relative">
+                  <div className="flex items-center bg-zinc-900 border border-zinc-700 rounded-xl px-2.5 py-1 focus-within:border-emerald-500 transition-colors">
                     <input 
                       type="number"
                       min="0"
                       value={finishingMinutes}
                       onChange={e => setFinishingMinutes(e.target.value === '' ? '' : Math.max(0, Number(e.target.value)))}
                       placeholder="0"
-                      className="w-full bg-zinc-900 border border-zinc-700 rounded-xl pl-2 pr-7 py-2.5 text-sm font-bold text-white outline-none focus:border-emerald-500 text-center"
+                      className="w-full bg-transparent py-1.5 text-sm font-bold text-white outline-none min-w-0 text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                     />
-                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 text-[10px] font-bold">min</span>
+                    <span className="text-zinc-500 text-[10px] font-bold pl-1 select-none pointer-events-none">min</span>
                   </div>
-                </div>
-
-                {/* Quantidade */}
-                <div>
-                  <label className="text-[11px] font-bold text-zinc-400 block mb-1">
-                    Quantidade:
-                  </label>
-                  <input 
-                    type="number"
-                    min="1"
-                    value={quantity}
-                    onChange={e => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
-                    className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-3 py-2.5 text-sm font-bold text-white outline-none focus:border-emerald-500 text-center"
-                  />
                 </div>
               </div>
             </div>
