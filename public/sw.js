@@ -1,4 +1,4 @@
-const CACHE_NAME = 'printflow-pwa-v8';
+const CACHE_NAME = 'printflow-pwa-v9';
 
 const PRECACHE_ASSETS = [
   '/',
@@ -19,9 +19,10 @@ const PRECACHE_ASSETS = [
   '/apple-touch-icon.png'
 ];
 
-// Install event: cache core shell assets with fault tolerance
+// Install event: cache core shell assets without forcing immediate skipWaiting
 self.addEventListener('install', (event) => {
-  self.skipWaiting();
+  // Do NOT call self.skipWaiting() here automatically.
+  // This prevents the new SW from hijacking active sessions mid-operation.
   event.waitUntil(
     caches.open(CACHE_NAME).then(async (cache) => {
       await Promise.allSettled(
@@ -29,7 +30,7 @@ self.addEventListener('install', (event) => {
           try {
             await cache.add(url);
           } catch (err) {
-            console.warn('[PrintFlow SW] Cache skipped for asset:', url, err);
+            // Soft failure for optional assets
           }
         })
       );
@@ -37,7 +38,7 @@ self.addEventListener('install', (event) => {
   );
 });
 
-// Activate event: clean up outdated caches immediately and claim clients
+// Activate event: safely clean up outdated caches
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((cacheNames) => {
@@ -46,36 +47,41 @@ self.addEventListener('activate', (event) => {
           .filter((name) => name !== CACHE_NAME)
           .map((name) => caches.delete(name))
       );
-    }).then(() => self.clients.claim())
+    })
   );
 });
 
-// Listen for messages from the client
+// Message listener for controlled user-driven updates
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     self.skipWaiting();
   }
   if (event.data && event.data.type === 'CLEAR_ALL_CACHES') {
     caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k))));
-    self.skipWaiting();
   }
 });
 
-// Fetch event: Network-first for dynamic/Supabase requests, Stale-While-Revalidate for static assets
+// Fetch event: Network-first for navigation & code, Cache-first for static media
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // Ignore non-GET requests and Supabase / external auth API calls (always go to network)
-  if (event.request.method !== 'GET' || url.hostname.includes('supabase.co')) {
+  // Bypass non-GET, Supabase database/auth requests, and dev server internals
+  if (
+    event.request.method !== 'GET' ||
+    url.hostname.includes('supabase.co') ||
+    url.pathname.startsWith('/@') ||
+    url.pathname.includes('/node_modules/') ||
+    url.search.includes('t=')
+  ) {
     return;
   }
 
-  // Handle SPA navigation requests with proper offline fallback
+  // 1. Navigation requests (SPA pages): Network-First, fallback to cached index.html
   if (event.request.mode === 'navigate') {
     event.respondWith(
       fetch(event.request)
         .then((response) => {
-          if (response && response.status === 200) {
+          if (response && response.status === 200 && response.type === 'basic') {
             const responseClone = response.clone();
             caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
           }
@@ -86,31 +92,51 @@ self.addEventListener('fetch', (event) => {
           if (cachedIndex) return cachedIndex;
           const cachedRoot = await caches.match('/');
           if (cachedRoot) return cachedRoot;
-          return new Response('<!DOCTYPE html><html><body><h1>PrintFlow 3D</h1><p>Conecte-se à internet para carregar o aplicativo.</p></body></html>', {
-            headers: { 'Content-Type': 'text/html; charset=utf-8' },
-            status: 200
-          });
+          return new Response(
+            '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>PrintFlow 3D - Offline</title></head><body style="background:#09090b;color:#f4f4f5;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;"><div style="text-align:center;"><h1>PrintFlow 3D</h1><p>Você está sem conexão com a internet. Conecte-se para sincronizar seus dados.</p></div></body></html>',
+            { headers: { 'Content-Type': 'text/html; charset=utf-8' }, status: 200 }
+          );
         })
     );
     return;
   }
 
-  // Stale-While-Revalidate for static assets
-  event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      const fetchPromise = fetch(event.request)
-        .then((networkResponse) => {
-          if (networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
-            const responseToCache = networkResponse.clone();
-            caches.open(CACHE_NAME).then((cache) => {
-              cache.put(event.request, responseToCache);
-            });
-          }
-          return networkResponse;
-        })
-        .catch(() => cachedResponse);
+  // 2. Static media assets (icons, images, fonts, manifest): Cache-First
+  const isStaticMedia =
+    url.pathname.startsWith('/icons/') ||
+    url.pathname === '/manifest.json' ||
+    /\.(png|jpg|jpeg|svg|ico|webp|woff|woff2|ttf|eot)$/i.test(url.pathname);
 
-      return cachedResponse || fetchPromise;
-    })
+  if (isStaticMedia) {
+    event.respondWith(
+      caches.match(event.request).then((cachedResponse) => {
+        if (cachedResponse) {
+          return cachedResponse;
+        }
+        return fetch(event.request)
+          .then((networkResponse) => {
+            if (networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
+              const responseClone = networkResponse.clone();
+              caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
+            }
+            return networkResponse;
+          })
+          .catch(() => cachedResponse);
+      })
+    );
+    return;
+  }
+
+  // 3. Scripts, styles, and other resources: Network-First to guarantee compatibility
+  event.respondWith(
+    fetch(event.request)
+      .then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
+          const responseClone = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
+        }
+        return networkResponse;
+      })
+      .catch(() => caches.match(event.request))
   );
 });

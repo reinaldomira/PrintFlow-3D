@@ -1,14 +1,37 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { NAVIGATION_ITEMS } from '../constants';
-import { Menu, X, ChevronRight, Crown, Zap } from 'lucide-react';
+import { Menu, X, ChevronRight, Crown, Zap, LogOut, User as UserIcon } from 'lucide-react';
 import { PWAInstallButton } from './PWAInstallButton';
 import { QuickQuoteModal } from './QuickQuoteModal';
+import { useApp } from '../context/AppContext';
 
 const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { isOnline, connectionError, user, logout, settings } = useApp();
+  const isCloudOnline = isOnline && !connectionError;
   const location = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isQuickQuoteOpen, setIsQuickQuoteOpen] = useState(false);
+
+  // Customização dinâmica por cliente/oficina (Whitelabel)
+  const customBrandName = (
+    settings.businessInfo?.tradeName?.trim() ||
+    settings.businessInfo?.companyName?.trim() ||
+    ''
+  );
+  const customLogoUrl = settings.businessInfo?.logoUrl?.trim() || '';
+  const isCustomBrand = Boolean(customBrandName || customLogoUrl);
+  const displayBrandName = customBrandName || 'PrintFlow';
+  const displayLogo = customLogoUrl || '/logo.png';
+
+  // Atualização dinâmica do título da aba no navegador conforme o cliente
+  useEffect(() => {
+    if (customBrandName) {
+      document.title = `${customBrandName} - Gestão 3D`;
+    } else {
+      document.title = 'PrintFlow 3D - Gestão de Impressão 3D';
+    }
+  }, [customBrandName]);
 
   // Close drawer automatically on route navigation
   useEffect(() => {
@@ -43,27 +66,33 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
       {/* 1. SIDEBAR FIXA PARA DESKTOP                             */}
       {/* ======================================================== */}
       <aside className="hidden md:flex flex-col fixed left-0 top-0 bottom-0 w-64 bg-[#0f172a] border-r border-[#1e293b] p-5 z-40">
-        {/* Brand Lockup */}
+        {/* Brand Lockup Customizável (Whitelabel) */}
         <div className="flex flex-col items-center text-center pb-6 border-b border-[#1e293b]/70 mb-5">
           <div className="relative mb-2.5 group">
-            <div className="w-16 h-16 rounded-2xl overflow-hidden border-2 border-cyan-400/50 shadow-xl shadow-cyan-500/20 bg-[#09090b] transition-transform group-hover:scale-105">
+            <div className="w-16 h-16 rounded-2xl overflow-hidden border-2 border-cyan-400/50 shadow-xl shadow-cyan-500/20 bg-[#09090b] transition-transform group-hover:scale-105 flex items-center justify-center p-1">
               <img 
-                src="/logo.png" 
-                alt="PrintFlow 3D" 
-                className="w-full h-full object-cover"
+                src={displayLogo} 
+                alt={displayBrandName} 
+                className="w-full h-full object-contain rounded-xl"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).src = '/logo.png';
+                }}
               />
             </div>
-            <div className="absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full bg-emerald-500 border-2 border-[#0f172a]" title="Online" />
+            <div 
+              className={`absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full border-2 border-[#0f172a] ${isCloudOnline ? 'bg-emerald-500' : 'bg-amber-500'}`} 
+              title={isCloudOnline ? 'Conectado à Nuvem' : 'Modo Local (Offline)'} 
+            />
           </div>
           
-          <h2 className="text-sm font-black text-white tracking-wide flex items-center gap-1.5 mb-1.5">
-            <span>PrintFlow</span>
-            <span className="text-cyan-400 font-mono">3D</span>
+          <h2 className="text-sm font-black text-white tracking-wide flex items-center justify-center gap-1.5 mb-1.5 px-1 max-w-full">
+            <span className="truncate">{displayBrandName}</span>
+            {!customBrandName && <span className="text-cyan-400 font-mono">3D</span>}
           </h2>
 
           <div className="flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-[10px] font-bold tracking-wider">
             <Crown className="w-3 h-3" />
-            <span>PLANO PRO</span>
+            <span>{isCustomBrand ? 'SISTEMA PRO' : 'PLANO PRO'}</span>
           </div>
         </div>
 
@@ -114,10 +143,36 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
           <PWAInstallButton variant="sidebar" />
         </div>
 
+        {/* User Card & Logout */}
+        {user && (
+          <div className="pt-2.5 pb-1 border-t border-[#1e293b]/60 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 overflow-hidden flex-1 min-w-0">
+              <div className="w-7 h-7 rounded-lg bg-[#1a263d] border border-[#27354f] flex items-center justify-center text-cyan-400 flex-shrink-0">
+                <UserIcon className="w-3.5 h-3.5" />
+              </div>
+              <div className="truncate text-left">
+                <p className="text-[11px] font-bold text-slate-200 truncate">{user.email || 'Usuário'}</p>
+                <p className="text-[9px] text-emerald-400 font-medium">Conectado</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={logout}
+              title="Sair / Trocar de Conta"
+              className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 border border-red-500/20 active:scale-95 transition-all flex-shrink-0"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
         {/* Footer info in sidebar */}
         <div className="pt-3 border-t border-[#1e293b]/70 flex items-center justify-between text-[11px] text-slate-500 font-mono">
-          <span>PrintFlow v2.4</span>
-          <span className="w-2 h-2 rounded-full bg-emerald-500" title="Online" />
+          <span className="truncate mr-2">{isCustomBrand ? displayBrandName : 'PrintFlow v2.4'}</span>
+          <span 
+            className={`w-2 h-2 rounded-full flex-shrink-0 ${isCloudOnline ? 'bg-emerald-500' : 'bg-amber-500'}`} 
+            title={isCloudOnline ? 'Conectado à Nuvem' : 'Modo Local (Offline)'} 
+          />
         </div>
       </aside>
 
@@ -135,20 +190,25 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             <Menu className="w-5 h-5 text-cyan-400" />
           </button>
 
-          <Link to="/" className="flex items-center gap-2 active:opacity-80 transition-opacity">
-            <div className="w-9 h-9 rounded-xl overflow-hidden border border-cyan-400/50 shadow-md shadow-cyan-500/20 bg-[#09090b] flex-shrink-0">
+          <Link to="/" className="flex items-center gap-2 active:opacity-80 transition-opacity max-w-[190px] sm:max-w-xs">
+            <div className="w-9 h-9 rounded-xl overflow-hidden border border-cyan-400/50 shadow-md shadow-cyan-500/20 bg-[#09090b] flex-shrink-0 flex items-center justify-center p-0.5">
               <img 
-                src="/logo.png" 
-                alt="PrintFlow 3D" 
-                className="w-full h-full object-cover"
+                src={displayLogo} 
+                alt={displayBrandName} 
+                className="w-full h-full object-contain rounded-lg"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).src = '/logo.png';
+                }}
               />
             </div>
-            <div>
-              <div className="flex items-center gap-1 leading-tight">
-                <span className="font-black text-sm text-white tracking-tight">PrintFlow</span>
-                <span className="text-[11px] font-black text-cyan-400 font-mono">3D</span>
+            <div className="truncate">
+              <div className="flex items-center gap-1 leading-tight truncate">
+                <span className="font-black text-sm text-white tracking-tight truncate">{displayBrandName}</span>
+                {!customBrandName && <span className="text-[11px] font-black text-cyan-400 font-mono">3D</span>}
               </div>
-              <p className="text-[10px] text-slate-400 font-medium leading-none">Gestão 3D</p>
+              <p className="text-[10px] text-slate-400 font-medium leading-none truncate">
+                {isCustomBrand ? 'Painel de Gestão' : 'Gestão 3D'}
+              </p>
             </div>
           </Link>
         </div>
@@ -192,22 +252,25 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
       >
         {/* Cabeçalho da Gaveta Lateral */}
         <div className="p-4 border-b border-[#1e293b] flex items-center justify-between bg-[#0b111e]/60">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl overflow-hidden border border-cyan-400/50 shadow-md shadow-cyan-500/20 bg-[#09090b] flex-shrink-0">
+          <div className="flex items-center gap-3 overflow-hidden flex-1 mr-2">
+            <div className="w-10 h-10 rounded-xl overflow-hidden border border-cyan-400/50 shadow-md shadow-cyan-500/20 bg-[#09090b] flex-shrink-0 flex items-center justify-center p-0.5">
               <img 
-                src="/logo.png" 
-                alt="PrintFlow 3D" 
-                className="w-full h-full object-cover"
+                src={displayLogo} 
+                alt={displayBrandName} 
+                className="w-full h-full object-contain rounded-lg"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).src = '/logo.png';
+                }}
               />
             </div>
-            <div>
-              <div className="flex items-center gap-1.5">
-                <span className="font-black text-sm text-white">PrintFlow</span>
-                <span className="text-xs font-black text-cyan-400 font-mono">3D</span>
+            <div className="truncate">
+              <div className="flex items-center gap-1.5 truncate">
+                <span className="font-black text-sm text-white truncate">{displayBrandName}</span>
+                {!customBrandName && <span className="text-xs font-black text-cyan-400 font-mono">3D</span>}
               </div>
               <div className="flex items-center gap-1 text-[10px] text-amber-400 font-bold">
                 <Crown className="w-2.5 h-2.5" />
-                <span>PLANO PRO ATIVO</span>
+                <span>{isCustomBrand ? 'SISTEMA PRO ATIVO' : 'PLANO PRO ATIVO'}</span>
               </div>
             </div>
           </div>
@@ -215,7 +278,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
           <button 
             onClick={closeMenu}
             aria-label="Fechar menu lateral"
-            className="w-9 h-9 rounded-xl bg-[#131d31] hover:bg-[#1a263d] border border-[#1e293b] flex items-center justify-center text-slate-400 hover:text-white active:scale-90 transition-transform"
+            className="w-9 h-9 rounded-xl bg-[#131d31] hover:bg-[#1a263d] border border-[#1e293b] flex items-center justify-center text-slate-400 hover:text-white active:scale-90 transition-transform flex-shrink-0"
           >
             <X className="w-4 h-4" />
           </button>
@@ -276,13 +339,41 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
           </div>
         </div>
 
+        {/* Card do Usuário e Logout na Gaveta */}
+        {user && (
+          <div className="px-3.5 py-2.5 border-t border-[#1e293b] bg-[#0f172a]/95 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 overflow-hidden flex-1 min-w-0">
+              <div className="w-8 h-8 rounded-lg bg-[#1a263d] border border-[#27354f] flex items-center justify-center text-cyan-400 flex-shrink-0">
+                <UserIcon className="w-4 h-4" />
+              </div>
+              <div className="truncate text-left">
+                <p className="text-xs font-bold text-slate-200 truncate">{user.email || 'Usuário'}</p>
+                <p className="text-[10px] text-emerald-400 font-medium">Sessão Ativa</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                closeMenu();
+                logout();
+              }}
+              className="px-2.5 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 text-xs font-bold flex items-center gap-1.5 active:scale-95 transition-all"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Sair</span>
+            </button>
+          </div>
+        )}
+
         {/* Rodapé da Gaveta */}
         <div className="p-3.5 border-t border-[#1e293b] bg-[#0b111e]/80 flex items-center justify-between text-[11px] text-slate-400">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/50" />
-            <span className="font-mono text-slate-300">Sistema Conectado</span>
+          <div className="flex items-center gap-2 truncate mr-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/50 flex-shrink-0" />
+            <span className="font-mono text-slate-300 truncate">
+              {isCustomBrand ? `${displayBrandName} Conectado` : 'Sistema Conectado'}
+            </span>
           </div>
-          <span className="text-[10px] font-mono text-slate-500">v2.4 Pro</span>
+          <span className="text-[10px] font-mono text-slate-500 flex-shrink-0">v2.4 Pro</span>
         </div>
       </div>
 

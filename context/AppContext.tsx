@@ -10,7 +10,9 @@ import {
   fetchRemoteSettings, 
   saveRemoteSettings, 
   sanitizeErrorMessage,
-  extractCarrierData 
+  extractCarrierData,
+  isNetworkError,
+  isSchemaError
 } from '../services/settingsService';
 
 const isValidUUID = (id?: string | null): boolean => {
@@ -85,6 +87,8 @@ interface AppContextType {
   user: User | null;
   loading: boolean;
   dbError: string | null;
+  connectionError: string | null;
+  isOnline: boolean;
   setParts: (parts: Part[]) => void;
   setCustomers: (customers: Customer[]) => void;
   setOrders: (orders: Order[]) => void;
@@ -104,6 +108,7 @@ interface TableFetchResult<T = any> {
   data: T[] | null;
   error: string | null;
   success: boolean;
+  isNetwork?: boolean;
 }
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -121,6 +126,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [settingsConflict, setSettingsConflict] = useState<{ remoteUpdatedAt: string; remoteVersion?: number; pendingSettings: Settings } | null>(null);
   const [loading, setLoading] = useState(true);
   const [dbError, setDbError] = useState<string | null>(null);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
 
   const isRefreshingRef = useRef(false);
   const lastRefreshTimeRef = useRef(0);
@@ -129,17 +136,48 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const migratedExpensesRef = useRef(false);
   const migratedPaymentStatusRef = useRef(false);
 
+  const applyUser = (sessionUser: { id: string; email?: string } | null) => {
+    setUser(prev => {
+      if (!sessionUser) return null;
+      if (prev && prev.id === sessionUser.id && prev.email === (sessionUser.email || '')) {
+        return prev;
+      }
+      return { id: sessionUser.id, email: sessionUser.email || '' };
+    });
+  };
+
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      if (user?.id) {
+        refreshData();
+      }
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      setConnectionError('Dispositivo sem conexão com a internet. Exibindo dados locais seguros.');
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [user?.id]);
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session?.user) {
-        setUser({ id: session.user.id, email: session.user.email! });
+        applyUser(session.user);
       }
       setLoading(false);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (session?.user) {
-        setUser({ id: session.user.id, email: session.user.email! });
+        applyUser(session.user);
       } else if (event === 'SIGNED_OUT') {
         setUser(null);
         setPartsState([]);
@@ -154,6 +192,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSettingsSyncState('synced');
         setSettingsConflict(null);
         setDbError(null);
+        setConnectionError(null);
         warnedMissingTablesRef.current.clear();
         migratedFailuresRef.current = false;
         migratedExpensesRef.current = false;
@@ -165,7 +204,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user?.id) return;
 
     refreshData();
 
@@ -198,7 +237,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const handleSyncOnVisible = () => {
       // Sincroniza ao retornar para a aba se passou mais de 45 segundos
       const elapsed = Date.now() - lastRefreshTimeRef.current;
-      if (document.visibilityState === 'visible' && user && elapsed > 45000) {
+      if (document.visibilityState === 'visible' && user?.id && elapsed > 45000) {
         refreshData();
       }
     };
@@ -211,7 +250,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       window.removeEventListener('visibilitychange', handleSyncOnVisible);
       window.removeEventListener('online', handleSyncOnVisible);
     };
-  }, [user]);
+  }, [user?.id]);
 
   const refreshData = async () => {
     if (!user) return;
@@ -223,7 +262,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     
     try {
       const fetchTable = async (table: string, orderCol?: string, ascending?: boolean): Promise<TableFetchResult> => {
-        try {
+        const queryTable = async () => {
           let query = supabase.from(table).select('*').eq('user_id', user.id);
           if (orderCol) {
             const isAsc = typeof ascending === 'boolean'
@@ -231,19 +270,50 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               : (table !== 'orders' && table !== 'parts' && table !== 'failures' && table !== 'cash_expenses');
             query = query.order(orderCol, { ascending: isAsc });
           }
-          const { data, error } = await query;
+          return await query;
+        };
+
+        try {
+          let { data, error } = await queryTable();
+
+          // Auto-retry uma vez se for falha transitória de rede / Failed to fetch
+          if (error && isNetworkError(error.message)) {
+            await new Promise(res => setTimeout(res, 600));
+            const retryRes = await queryTable();
+            data = retryRes.data;
+            error = retryRes.error;
+          }
+
           if (error) {
+            const rawMsg = error.message || `Código ${error.code || 'desconhecido'}`;
+            const sanitized = sanitizeErrorMessage(rawMsg);
+            const isNet = isNetworkError(rawMsg);
+
             // Se for tabela opcional (supplies, failures ou cash_expenses), trata com segurança sem emitir warning agressivo
             if (table === 'supplies' || table === 'failures' || table === 'cash_expenses') {
               if (!warnedMissingTablesRef.current.has(table)) {
-                console.warn(`Aviso na tabela opcional "${table}":`, sanitizeErrorMessage(error.message || `Código ${error.code || 'desconhecido'}`));
+                console.warn(`Aviso na tabela opcional "${table}":`, sanitized);
                 warnedMissingTablesRef.current.add(table);
               }
-              return { table, data: null, error: null, success: false };
+              return { table, data: null, error: null, success: false, isNetwork: isNet };
             }
 
-            const sanitized = sanitizeErrorMessage(error.message || `Código ${error.code || 'desconhecido'}`);
-            // Log warning only once per missing table to avoid flooding console
+            // Se for falha de rede/conectividade, categoriza claramente como isNetwork
+            if (isNet) {
+              if (!warnedMissingTablesRef.current.has(`${table}_net`)) {
+                console.warn(`Aviso de conexão na tabela "${table}":`, sanitized);
+                warnedMissingTablesRef.current.add(`${table}_net`);
+              }
+              return { 
+                table, 
+                data: null, 
+                error: `Tabela "${table}": Conexão indisponível (${sanitized})`, 
+                success: false, 
+                isNetwork: true 
+              };
+            }
+
+            // Erro real de schema no banco de dados
             if (!warnedMissingTablesRef.current.has(table)) {
               console.warn(`Aviso na tabela "${table}":`, sanitized);
               warnedMissingTablesRef.current.add(table);
@@ -251,18 +321,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             let formattedMsg = `Tabela "${table}": ${sanitized}`;
             if (error.code === '42P01' || error.code === 'PGRST205' || sanitized.includes('schema cache')) {
               formattedMsg = `Tabela "${table}" ausente no banco de dados`;
-            } else if (error.code === 'PGRST204' || sanitized.toLowerCase().includes('column') || sanitized.toLowerCase().includes('coluna')) {
+            } else if (error.code === 'PGRST204' || error.code === '42703' || sanitized.toLowerCase().includes('column') || sanitized.toLowerCase().includes('coluna')) {
               formattedMsg = `Coluna ausente na tabela "${table}": ${sanitized}`;
             }
-            return { table, data: null, error: formattedMsg, success: false };
+            return { table, data: null, error: formattedMsg, success: false, isNetwork: false };
           }
           // Table exists and query succeeded
           warnedMissingTablesRef.current.delete(table);
-          return { table, data: data || [], error: null, success: true };
+          warnedMissingTablesRef.current.delete(`${table}_net`);
+          return { table, data: data || [], error: null, success: true, isNetwork: false };
         } catch (err: any) {
-          const sanitized = sanitizeErrorMessage(err?.message || 'Falha de conexão');
+          const rawMsg = err?.message || 'Falha de conexão';
+          const sanitized = sanitizeErrorMessage(rawMsg);
+          const isNet = isNetworkError(rawMsg);
           console.error(`Exceção ao consultar tabela "${table}":`, sanitized);
-          return { table, data: null, error: `Falha de conexão na tabela "${table}": ${sanitized}`, success: false };
+          return { 
+            table, 
+            data: null, 
+            error: isNet 
+              ? `Tabela "${table}": Conexão indisponível (${sanitized})` 
+              : `Falha de conexão na tabela "${table}": ${sanitized}`, 
+            success: false, 
+            isNetwork: isNet 
+          };
         }
       };
 
@@ -331,8 +412,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
 
         setPartsState(normalizedParts);
+        try {
+          localStorage.setItem(`printflow_parts_${user.id}`, JSON.stringify(normalizedParts));
+        } catch (e) {}
+      } else {
+        try {
+          const cached = localStorage.getItem(`printflow_parts_${user.id}`);
+          if (cached) setPartsState(JSON.parse(cached));
+        } catch (e) {}
       }
-      if (customersRes.success && customersRes.data !== null) setCustomersState(customersRes.data);
+
+      if (customersRes.success && customersRes.data !== null) {
+        setCustomersState(customersRes.data);
+        try {
+          localStorage.setItem(`printflow_customers_${user.id}`, JSON.stringify(customersRes.data));
+        } catch (e) {}
+      } else {
+        try {
+          const cached = localStorage.getItem(`printflow_customers_${user.id}`);
+          if (cached) setCustomersState(JSON.parse(cached));
+        } catch (e) {}
+      }
+
       if (ordersRes.success && ordersRes.data !== null) {
         const normalizedOrders = (ordersRes.data || []).map((row: any) => {
           const pm = row.paymentMethod || row.payment_method || (row.payments && row.payments[0]?.method) || PaymentMethod.PIX;
@@ -351,6 +452,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const stockUpdatedAt = row.stockUpdatedAt || row.stock_updated_at || undefined;
           const custosFinanceiros = row.custosFinanceiros || row.custos_financeiros || undefined;
           const detalhesPrecificacao = row.detalhesPrecificacao || row.detalhes_precificacao || undefined;
+          const consumedSupplies = (row.consumedSupplies && typeof row.consumedSupplies === 'object')
+            ? row.consumedSupplies
+            : ((detalhesPrecificacao && typeof detalhesPrecificacao.consumedSupplies === 'object')
+              ? detalhesPrecificacao.consumedSupplies
+              : {});
           const discount = Number(row.discount) || 0;
 
           // Sanitiza itens de orders para remover quaisquer propriedades com '_'
@@ -380,6 +486,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             paymentStatus,
             payments,
             consumedFilaments,
+            consumedSupplies,
             stockDeductionStatus,
             stockUpdatedAt,
             custosFinanceiros,
@@ -388,9 +495,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           };
         });
         setOrdersState(normalizedOrders);
+        try {
+          localStorage.setItem(`printflow_orders_${user.id}`, JSON.stringify(normalizedOrders));
+        } catch (e) {}
+      } else {
+        try {
+          const cached = localStorage.getItem(`printflow_orders_${user.id}`);
+          if (cached) setOrdersState(JSON.parse(cached));
+        } catch (e) {}
       }
-      if (filamentsRes.success && filamentsRes.data !== null) setFilamentsState(filamentsRes.data);
-      if (printersRes.success && printersRes.data !== null) setPrintersState(printersRes.data);
+
+      if (filamentsRes.success && filamentsRes.data !== null) {
+        setFilamentsState(filamentsRes.data);
+        try {
+          localStorage.setItem(`printflow_filaments_${user.id}`, JSON.stringify(filamentsRes.data));
+        } catch (e) {}
+      } else {
+        try {
+          const cached = localStorage.getItem(`printflow_filaments_${user.id}`);
+          if (cached) setFilamentsState(JSON.parse(cached));
+        } catch (e) {}
+      }
+
+      if (printersRes.success && printersRes.data !== null) {
+        setPrintersState(printersRes.data);
+        try {
+          localStorage.setItem(`printflow_printers_${user.id}`, JSON.stringify(printersRes.data));
+        } catch (e) {}
+      } else {
+        try {
+          const cached = localStorage.getItem(`printflow_printers_${user.id}`);
+          if (cached) setPrintersState(JSON.parse(cached));
+        } catch (e) {}
+      }
+
       if (suppliesRes.success && suppliesRes.data !== null) {
         const normalizedSupplies: Supply[] = (suppliesRes.data || []).map((row: any) => ({
           id: row.id,
@@ -419,15 +557,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       if (failuresRes.success && failuresRes.data !== null) {
-        setFailuresState(failuresRes.data.map(rowToFailure));
+        const normFailures = failuresRes.data.map(rowToFailure);
+        setFailuresState(normFailures);
+        try {
+          localStorage.setItem(`printflow_failures_cache_${user.id}`, JSON.stringify(normFailures));
+        } catch (e) {}
       } else {
-        setFailuresState([]);
+        try {
+          const cached = localStorage.getItem(`printflow_failures_cache_${user.id}`);
+          if (cached) setFailuresState(JSON.parse(cached));
+          else setFailuresState([]);
+        } catch (e) {
+          setFailuresState([]);
+        }
       }
 
       if (cashExpensesRes.success && cashExpensesRes.data !== null) {
-        setCashExpensesState(cashExpensesRes.data.map(rowToCashExpense));
+        const normExpenses = cashExpensesRes.data.map(rowToCashExpense);
+        setCashExpensesState(normExpenses);
+        try {
+          localStorage.setItem(`printflow_expenses_cache_${user.id}`, JSON.stringify(normExpenses));
+        } catch (e) {}
       } else {
-        setCashExpensesState([]);
+        try {
+          const cached = localStorage.getItem(`printflow_expenses_cache_${user.id}`);
+          if (cached) setCashExpensesState(JSON.parse(cached));
+          else setCashExpensesState([]);
+        } catch (e) {
+          setCashExpensesState([]);
+        }
       }
 
       // Migração única de dados legados do localStorage para o Supabase
@@ -646,35 +804,57 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         settingsError = `Falha de conexão na tabela "settings": ${sanitized}`;
       }
 
-      // Consolidação centralizada de erros sem sobrescrever
-      const collectedErrors: string[] = [];
-      const failedTables: string[] = [];
+      // Consolidação centralizada de erros separando erros reais de schema de falhas temporárias de conexão
+      const schemaErrors: string[] = [];
+      const connectionErrors: string[] = [];
+      const failedSchemaTables: string[] = [];
+      const failedConnectionTables: string[] = [];
 
       [partsRes, customersRes, ordersRes, filamentsRes, printersRes].forEach(res => {
         if (!res.success && res.error) {
-          collectedErrors.push(res.error);
-          failedTables.push(res.table);
+          if (res.isNetwork) {
+            connectionErrors.push(res.error);
+            failedConnectionTables.push(res.table);
+          } else {
+            schemaErrors.push(res.error);
+            failedSchemaTables.push(res.table);
+          }
         }
       });
 
       if (settingsError) {
-        collectedErrors.push(settingsError);
-        failedTables.push('settings');
+        if (isNetworkError(settingsError)) {
+          connectionErrors.push(settingsError);
+          failedConnectionTables.push('settings');
+        } else {
+          schemaErrors.push(settingsError);
+          failedSchemaTables.push('settings');
+        }
       }
 
-      if (collectedErrors.length === 0) {
-        // Limpa o estado de erro somente quando uma atualização confirmar que não há mais erros
+      // dbError só é preenchido para ERROS DE SCHEMA (tabela ou coluna ausente no banco)
+      if (schemaErrors.length === 0) {
         setDbError(null);
-      } else if (collectedErrors.length === 1) {
-        setDbError(collectedErrors[0]);
+      } else if (schemaErrors.length === 1) {
+        setDbError(schemaErrors[0]);
       } else {
-        // Mensagem consolidada detalhada sem omissão de tabelas falhas
-        setDbError(`Erros de sincronização em ${collectedErrors.length} tabelas (${failedTables.join(', ')}): ${collectedErrors.join(' | ')}`);
+        setDbError(`Tabelas ou colunas ausentes no banco de dados (${failedSchemaTables.join(', ')}): ${schemaErrors.join(' | ')}`);
+      }
+
+      // connectionError armazena falhas de conectividade/offline sem bloquear o app
+      if (connectionErrors.length > 0) {
+        setConnectionError(`Conexão com a nuvem indisponível no momento (${connectionErrors.length} tabelas aguardando rede: ${failedConnectionTables.join(', ')}). Seus dados locais continuam seguros.`);
+      } else {
+        setConnectionError(null);
       }
     } catch (error: any) {
       const sanitized = sanitizeErrorMessage(error?.message || 'Erro inesperado na sincronização');
       console.error('Erro ao buscar dados:', sanitized);
-      setDbError(`Falha ao sincronizar dados: ${sanitized}`);
+      if (isNetworkError(sanitized)) {
+        setConnectionError(`Conexão com o Supabase indisponível no momento (${sanitized}). Exibindo dados locais.`);
+      } else {
+        setDbError(`Falha ao sincronizar dados: ${sanitized}`);
+      }
     } finally {
       isRefreshingRef.current = false;
       setLoading(false);
@@ -910,6 +1090,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       resolveConflict,
       user, setUser,
       loading, dbError,
+      connectionError, isOnline,
       logout, refreshData
     }}>
       {children}

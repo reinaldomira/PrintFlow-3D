@@ -11,7 +11,8 @@ import {
   ChevronDown, ChevronUp, Package, Tag, Loader2, CreditCard, Banknote, 
   QrCode, MessageCircle, Printer as PrinterIcon, Edit2, CheckCircle2, UserPlus, 
   Wrench, AlertCircle, FileText, Calculator, TrendingUp, SlidersHorizontal, 
-  AlertTriangle, Percent, DollarSign, Clock, ShieldAlert, Sparkles, Check, RotateCcw, Zap
+  AlertTriangle, Percent, DollarSign, Clock, ShieldAlert, Sparkles, Check, RotateCcw, Zap,
+  PackageCheck, Layers
 } from 'lucide-react';
 import { QuotePdfModal } from '../components/QuotePdfModal';
 import { PricingCalculatorModal } from '../components/PricingCalculatorModal';
@@ -19,15 +20,26 @@ import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 import { QuickQuoteModal } from '../components/QuickQuoteModal';
 
 export interface StockPreviewRow {
-  filamentId: string;
+  id: string; // filamentId ou supplyId
+  itemType: 'filament' | 'supply';
+  filamentId?: string;
+  supplyId?: string;
   name: string;
   material: string;
   colorName: string;
   colorHex: string;
+  unit: string; // 'g' ou 'un'
+  currentStock: number;
+  deltaAmount: number;
+  finalStock: number;
+  apply: boolean;
+  returnAmount: number;
+  maxReturnAmount: number;
+
+  // Campos de compatibilidade com código existente
   currentWeight: number;
   deltaGrams: number;
   finalWeight: number;
-  apply: boolean;
   returnGrams: number;
   maxReturnGrams: number;
 }
@@ -77,6 +89,36 @@ export const calculateOrderFilamentConsumption = (
   return deductions;
 };
 
+export const calculateOrderSuppliesConsumption = (
+  items: OrderItem[],
+  parts: any[]
+): Record<string, number> => {
+  const deductions: Record<string, number> = {};
+
+  (items || []).forEach(orderItem => {
+    if (!orderItem || !orderItem.partId) return;
+    const qty = Math.max(1, Math.round(Number(orderItem.quantity) || 1));
+    const part = parts.find(p => p.id === orderItem.partId);
+    if (!part || !part.supplies || !Array.isArray(part.supplies)) return;
+
+    const rawUnits = Number(part.unitsPerPrint);
+    const unitsPerPrint = (!isNaN(rawUnits) && rawUnits >= 1) ? Math.floor(rawUnits) : 1;
+
+    part.supplies.forEach((supItem: any) => {
+      if (!supItem || !supItem.supplyId) return;
+      const totalBatchUnits = Number(supItem.quantity) || 0;
+      if (totalBatchUnits <= 0) return;
+      const unitsPerPiece = totalBatchUnits / unitsPerPrint;
+      const totalConsumed = Math.round(unitsPerPiece * qty);
+      if (totalConsumed > 0) {
+        deductions[supItem.supplyId] = (deductions[supItem.supplyId] || 0) + totalConsumed;
+      }
+    });
+  });
+
+  return deductions;
+};
+
 export const getOrderConsumedFilaments = (order?: Order | null): Record<string, number> => {
   if (!order) return {};
   if (order.consumedFilaments && typeof order.consumedFilaments === 'object') {
@@ -85,8 +127,27 @@ export const getOrderConsumedFilaments = (order?: Order | null): Record<string, 
   return {};
 };
 
+export const getOrderConsumedSupplies = (
+  order?: Order | null,
+  parts: any[] = []
+): Record<string, number> => {
+  if (!order) return {};
+  if (order.detalhesPrecificacao && (order.detalhesPrecificacao as any).consumedSupplies) {
+    return (order.detalhesPrecificacao as any).consumedSupplies;
+  }
+  if ((order as any).consumedSupplies && typeof (order as any).consumedSupplies === 'object') {
+    return (order as any).consumedSupplies;
+  }
+  if (order.stockDeductionStatus === 'confirmed' || order.stockDeductionStatus === 'partial') {
+    if (order.items && order.items.length > 0 && parts.length > 0) {
+      return calculateOrderSuppliesConsumption(order.items, parts);
+    }
+  }
+  return {};
+};
+
 export const Orders: React.FC = () => {
-  const { orders, setOrders, refreshData, customers, parts, filaments, printers, settings, user } = useApp();
+  const { orders, setOrders, refreshData, customers, parts, filaments, printers, settings, user, supplies, setSupplies } = useApp();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isPricingCalculatorOpen, setIsPricingCalculatorOpen] = useState(false);
   const [isQuickQuoteOpen, setIsQuickQuoteOpen] = useState(false);
@@ -340,11 +401,11 @@ export const Orders: React.FC = () => {
     return (orderForm.items || []).reduce((sum, item) => {
       const part = parts.find(p => p.id === item.partId);
       if (!part) return sum + ((Number(item.unitPrice) || 0) * 0.4 * (Number(item.quantity) || 1));
-      const costInfo = calculatePartCosts(part, filaments, printers, settings);
+      const costInfo = calculatePartCosts(part, filaments, printers, settings, supplies);
       const unitCost = costInfo.totalCost > 0 ? costInfo.totalCost : ((Number(item.unitPrice) || 0) * 0.4);
       return sum + (unitCost * (Number(item.quantity) || 1));
     }, 0);
-  }, [orderForm.items, parts, filaments, printers, settings]);
+  }, [orderForm.items, parts, filaments, printers, settings, supplies]);
 
   // Quantidade total de itens no pedido
   const orderTotalQuantity = useMemo(() => {
@@ -379,7 +440,7 @@ export const Orders: React.FC = () => {
       ...prev,
       items: prev.items.map(item => {
         const part = parts.find(p => p.id === item.partId);
-        const basePrice = part ? calculatePartCosts(part, filaments, printers, settings).suggestedPrice : (Number(item.unitPrice) || 0);
+        const basePrice = part ? calculatePartCosts(part, filaments, printers, settings, supplies).suggestedPrice : (Number(item.unitPrice) || 0);
         const newUnitPrice = Number((basePrice * fator).toFixed(2));
         return {
           ...item,
@@ -548,7 +609,8 @@ export const Orders: React.FC = () => {
     basePayload: any,
     orderIdToUpdate: string | null,
     consumedMap: Record<string, number>,
-    stockStatus: 'none' | 'confirmed' | 'partial' | 'refunded'
+    stockStatus: 'none' | 'confirmed' | 'partial' | 'refunded',
+    consumedSuppliesMap: Record<string, number> = {}
   ) => {
     setIsSaving(true);
     setFormError(null);
@@ -564,6 +626,11 @@ export const Orders: React.FC = () => {
         }
         return clean;
       });
+
+      const updatedDetalhes = {
+        ...(fullPayload.detalhesPrecificacao || {}),
+        consumedSupplies: consumedSuppliesMap
+      };
 
       const orderPayload: any = {
         customerId: fullPayload.customerId || null,
@@ -581,7 +648,7 @@ export const Orders: React.FC = () => {
         stockDeductionStatus: stockStatus,
         stockUpdatedAt: new Date().toISOString(),
         custosFinanceiros: fullPayload.custosFinanceiros || null,
-        detalhesPrecificacao: fullPayload.detalhesPrecificacao || null
+        detalhesPrecificacao: updatedDetalhes
       };
 
       if (!orderIdToUpdate) {
@@ -689,47 +756,85 @@ export const Orders: React.FC = () => {
       }] : []
     };
 
-    // Calcula o consumo de filamento necessário para este pedido
+    // Calcula o consumo de filamento e de insumos necessário para este pedido
     const calculatedConsumption = calculateOrderFilamentConsumption(sanitizedItems, parts, filaments);
+    const calculatedSupplies = calculateOrderSuppliesConsumption(sanitizedItems, parts);
 
     if (!editingOrderId) {
-      // 1. NOVO PEDIDO: Solicitar confirmação antes de efetuar a baixa de filamento (Regra 1 e 4)
-      if (Object.keys(calculatedConsumption).length === 0) {
-        // Sem receitas nem filamentos vinculados (ex: serviço ou item avulso) -> salva direto
-        await executeOrderSave(fullPayload, basePayload, null, {}, 'none');
+      // 1. NOVO PEDIDO: Solicitar confirmação antes de efetuar a baixa de filamento e insumos
+      if (Object.keys(calculatedConsumption).length === 0 && Object.keys(calculatedSupplies).length === 0) {
+        // Sem receitas nem insumos vinculados (ex: serviço ou item avulso) -> salva direto
+        await executeOrderSave(fullPayload, basePayload, null, {}, 'none', {});
         return;
       }
 
-      const rows: StockPreviewRow[] = Object.entries(calculatedConsumption).map(([fId, grams]) => {
+      const filamentRows: StockPreviewRow[] = Object.entries(calculatedConsumption).map(([fId, grams]) => {
         const f = filaments.find(item => item.id === fId);
         const current = f?.remainingWeight ?? f?.weight ?? 1000;
         return {
+          id: fId,
+          itemType: 'filament',
           filamentId: fId,
           name: f ? `${f.brand} - ${f.material}` : 'Filamento',
           material: f?.material || 'PLA',
           colorName: f?.colorName || 'Cor Padrão',
           colorHex: f?.colorHex || '#3b82f6',
-          currentWeight: current,
-          deltaGrams: grams, // Positivo = baixa
-          finalWeight: current - grams,
+          unit: 'g',
+          currentStock: current,
+          deltaAmount: grams,
+          finalStock: current - grams,
           apply: true,
+          returnAmount: 0,
+          maxReturnAmount: 0,
+          currentWeight: current,
+          deltaGrams: grams,
+          finalWeight: current - grams,
           returnGrams: 0,
           maxReturnGrams: 0
         };
       });
 
+      const supplyRows: StockPreviewRow[] = Object.entries(calculatedSupplies).map(([sId, qtyNeeded]) => {
+        const s = supplies.find(item => item.id === sId);
+        const current = Number(s?.quantity) || 0;
+        return {
+          id: sId,
+          itemType: 'supply',
+          supplyId: sId,
+          name: s ? s.name : 'Insumo',
+          material: s?.category || 'Insumo',
+          colorName: s?.category || 'Componente',
+          colorHex: '#10b981',
+          unit: 'un',
+          currentStock: current,
+          deltaAmount: qtyNeeded,
+          finalStock: current - qtyNeeded,
+          apply: true,
+          returnAmount: 0,
+          maxReturnAmount: 0,
+          currentWeight: current,
+          deltaGrams: qtyNeeded,
+          finalWeight: current - qtyNeeded,
+          returnGrams: 0,
+          maxReturnGrams: 0
+        };
+      });
+
+      const rows: StockPreviewRow[] = [...filamentRows, ...supplyRows];
+
       setStockModal({
         isOpen: true,
         type: 'create',
-        title: 'Confirmação de Baixa de Filamento',
-        subtitle: 'Confira os carretéis que terão material baixado para a produção deste novo pedido.',
+        title: 'Confirmação de Baixa de Estoque',
+        subtitle: 'Confira os carretéis de filamento e os insumos que terão baixa registrada na venda.',
         rows,
         pendingOrderData: { fullPayload, basePayload, orderIdToUpdate: null }
       });
     } else {
-      // 2. EDIÇÃO DE PEDIDO: Calcular a diferença entre consumo anterior e novo consumo (Regra 2)
+      // 2. EDIÇÃO DE PEDIDO: Calcular a diferença entre consumo anterior e novo consumo
       const existingOrder = orders.find(o => o.id === editingOrderId);
       const prevConsumption = getOrderConsumedFilaments(existingOrder);
+      const prevSupplies = getOrderConsumedSupplies(existingOrder, parts);
 
       // Compara prevConsumption vs calculatedConsumption
       const allFilamentIds = Array.from(new Set([
@@ -750,15 +855,63 @@ export const Orders: React.FC = () => {
           const finalWeight = delta > 0 ? (current - delta) : (current + Math.abs(delta));
 
           changedRows.push({
+            id: fId,
+            itemType: 'filament',
             filamentId: fId,
             name: f ? `${f.brand} - ${f.material}` : 'Filamento',
             material: f?.material || 'PLA',
             colorName: f?.colorName || 'Cor Padrão',
             colorHex: f?.colorHex || '#3b82f6',
+            unit: 'g',
+            currentStock: current,
+            deltaAmount: delta,
+            finalStock: finalWeight,
+            apply: true,
+            returnAmount: delta < 0 ? Math.abs(delta) : 0,
+            maxReturnAmount: delta < 0 ? Math.abs(delta) : 0,
             currentWeight: current,
             deltaGrams: delta,
             finalWeight,
+            returnGrams: delta < 0 ? Math.abs(delta) : 0,
+            maxReturnGrams: delta < 0 ? Math.abs(delta) : 0
+          });
+        }
+      });
+
+      // Compara prevSupplies vs calculatedSupplies
+      const allSupplyIds = Array.from(new Set([
+        ...Object.keys(prevSupplies),
+        ...Object.keys(calculatedSupplies)
+      ]));
+
+      allSupplyIds.forEach(sId => {
+        const prev = prevSupplies[sId] || 0;
+        const next = calculatedSupplies[sId] || 0;
+        const delta = next - prev;
+
+        if (delta !== 0) {
+          const s = supplies.find(item => item.id === sId);
+          const current = Number(s?.quantity) || 0;
+          const finalStock = delta > 0 ? (current - delta) : (current + Math.abs(delta));
+
+          changedRows.push({
+            id: sId,
+            itemType: 'supply',
+            supplyId: sId,
+            name: s ? s.name : 'Insumo',
+            material: s?.category || 'Insumo',
+            colorName: s?.category || 'Componente',
+            colorHex: '#10b981',
+            unit: 'un',
+            currentStock: current,
+            deltaAmount: delta,
+            finalStock,
             apply: true,
+            returnAmount: delta < 0 ? Math.abs(delta) : 0,
+            maxReturnAmount: delta < 0 ? Math.abs(delta) : 0,
+            currentWeight: current,
+            deltaGrams: delta,
+            finalWeight: finalStock,
             returnGrams: delta < 0 ? Math.abs(delta) : 0,
             maxReturnGrams: delta < 0 ? Math.abs(delta) : 0
           });
@@ -766,13 +919,14 @@ export const Orders: React.FC = () => {
       });
 
       if (changedRows.length === 0) {
-        // Nenhuma alteração no consumo de material -> salva direto sem perturbar estoque
+        // Nenhuma alteração no consumo -> salva direto sem perturbar estoque
         await executeOrderSave(
           fullPayload, 
           basePayload, 
           editingOrderId, 
           prevConsumption, 
-          existingOrder?.stockDeductionStatus || 'confirmed'
+          existingOrder?.stockDeductionStatus || 'confirmed',
+          prevSupplies
         );
         return;
       }
@@ -781,7 +935,7 @@ export const Orders: React.FC = () => {
         isOpen: true,
         type: 'edit',
         title: 'Ajuste de Estoque por Edição de Pedido',
-        subtitle: 'As alterações nas peças modificaram o consumo de filamento. Movimente apenas as diferenças apuradas.',
+        subtitle: 'As alterações nas peças modificaram o consumo de filamentos ou insumos. Movimente apenas as diferenças apuradas.',
         rows: changedRows,
         orderId: editingOrderId,
         orderCode: editingOrderId.slice(0, 5).toUpperCase(),
@@ -799,55 +953,111 @@ export const Orders: React.FC = () => {
 
       // 1. Validação prévia de saldo (Etapa 2 - Regra anti-estoque negativo)
       if (!skipStock && (stockModal.type === 'create' || stockModal.type === 'edit')) {
-        const rowsToCheck = approvedRows.filter(r => r.apply && r.deltaGrams > 0);
+        const rowsToCheck = approvedRows.filter(r => r.apply && (r.deltaAmount ?? r.deltaGrams) > 0);
         for (const row of rowsToCheck) {
-          const currentSpool = filaments.find(f => f.id === row.filamentId);
-          const localBalance = currentSpool?.remainingWeight ?? currentSpool?.weight ?? 1000;
-          if (localBalance < row.deltaGrams) {
-            const missing = row.deltaGrams - localBalance;
-            throw new Error(`Estoque insuficiente no carretel "${row.name}": saldo em tela é de ${localBalance}g, mas são necessários ${row.deltaGrams}g (faltam ${missing}g). Ajuste o pedido ou use "Salvar sem Baixar Estoque".`);
+          const delta = row.deltaAmount ?? row.deltaGrams;
+          if (row.itemType === 'supply') {
+            const s = supplies.find(x => x.id === (row.supplyId || row.id));
+            const localBalance = Number(s?.quantity) || 0;
+            if (localBalance < delta) {
+              const missing = delta - localBalance;
+              throw new Error(`Estoque insuficiente no insumo "${row.name}": saldo disponível é de ${localBalance} un, mas são necessários ${delta} un (faltam ${missing} un). Ajuste o pedido ou use "Salvar sem Baixar Estoque".`);
+            }
+          } else {
+            const currentSpool = filaments.find(f => f.id === (row.filamentId || row.id));
+            const localBalance = currentSpool?.remainingWeight ?? currentSpool?.weight ?? 1000;
+            if (localBalance < delta) {
+              const missing = delta - localBalance;
+              throw new Error(`Estoque insuficiente no carretel "${row.name}": saldo em tela é de ${localBalance}g, mas são necessários ${delta}g (faltam ${missing}g). Ajuste o pedido ou use "Salvar sem Baixar Estoque".`);
+            }
           }
         }
       }
 
       if (stockModal.type === 'create') {
-        const confirmedConsumed: Record<string, number> = {};
+        const confirmedConsumedFilaments: Record<string, number> = {};
+        const confirmedConsumedSupplies: Record<string, number> = {};
         const debitedSpools: { filamentId: string; grams: number; previousWeight: number }[] = [];
+        const debitedSupplies: { supplyId: string; amount: number; previousQuantity: number }[] = [];
 
         if (!skipStock) {
-          const updatesToRun = approvedRows.filter(r => r.apply && r.deltaGrams > 0);
+          const updatesToRun = approvedRows.filter(r => r.apply && (r.deltaAmount ?? r.deltaGrams) > 0);
           
           for (const row of updatesToRun) {
-            // Re-consulta o saldo atual diretamente no Supabase para mitigar concorrência (Problema C)
-            const { data: freshFil, error: fetchErr } = await supabase
-              .from('filaments')
-              .select('remainingWeight, weight, brand, material')
-              .eq('id', row.filamentId)
-              .single();
+            const delta = row.deltaAmount ?? row.deltaGrams;
 
-            if (fetchErr || !freshFil) {
-              throw new Error(`Não foi possível verificar o saldo em tempo real do carretel ${row.name} no banco de dados.`);
+            if (row.itemType === 'supply') {
+              const supplyId = row.supplyId || row.id;
+              const { data: freshSupply, error: fetchErr } = await supabase
+                .from('supplies')
+                .select('quantity, name')
+                .eq('id', supplyId)
+                .single();
+
+              if (fetchErr || !freshSupply) {
+                throw new Error(`Não foi possível verificar o saldo em tempo real do insumo "${row.name}" no banco de dados.`);
+              }
+
+              const currentQuantity = Number(freshSupply.quantity) || 0;
+              if (currentQuantity < delta) {
+                const missing = delta - currentQuantity;
+                throw new Error(`Estoque insuficiente no insumo "${freshSupply.name}": saldo disponível no banco é de ${currentQuantity} un, necessário ${delta} un (faltam ${missing} un). A baixa foi interrompida para proteger seu estoque.`);
+              }
+
+              const newQuantity = currentQuantity - delta;
+
+              const { error: updErr } = await supabase
+                .from('supplies')
+                .update({ quantity: newQuantity, updated_at: new Date().toISOString() })
+                .eq('id', supplyId);
+
+              if (updErr) {
+                throw new Error(`Falha ao debitar insumo ${row.name} no Supabase: ${updErr.message}`);
+              }
+
+              confirmedConsumedSupplies[supplyId] = delta;
+              debitedSupplies.push({ supplyId, amount: delta, previousQuantity: currentQuantity });
+            } else {
+              const filamentId = row.filamentId || row.id;
+              // Re-consulta o saldo atual diretamente no Supabase para mitigar concorrência
+              const { data: freshFil, error: fetchErr } = await supabase
+                .from('filaments')
+                .select('remainingWeight, weight, brand, material')
+                .eq('id', filamentId)
+                .single();
+
+              if (fetchErr || !freshFil) {
+                throw new Error(`Não foi possível verificar o saldo em tempo real do carretel ${row.name} no banco de dados.`);
+              }
+
+              const currentWeight = Number(freshFil.remainingWeight ?? freshFil.weight ?? 1000);
+              if (currentWeight < delta) {
+                const missing = delta - currentWeight;
+                throw new Error(`Estoque insuficiente no carretel "${freshFil.brand} - ${freshFil.material}": saldo disponível no banco é de ${currentWeight}g, necessário ${delta}g (faltam ${missing}g). A baixa foi interrompida para proteger seu estoque.`);
+              }
+
+              const newWeight = currentWeight - delta;
+
+              const { error: updErr } = await supabase
+                .from('filaments')
+                .update({ remainingWeight: newWeight })
+                .eq('id', filamentId);
+
+              if (updErr) {
+                throw new Error(`Falha ao debitar carretel ${row.name} no Supabase: ${updErr.message}`);
+              }
+
+              confirmedConsumedFilaments[filamentId] = delta;
+              debitedSpools.push({ filamentId, grams: delta, previousWeight: currentWeight });
             }
+          }
 
-            const currentWeight = Number(freshFil.remainingWeight ?? freshFil.weight ?? 1000);
-            if (currentWeight < row.deltaGrams) {
-              const missing = row.deltaGrams - currentWeight;
-              throw new Error(`Estoque insuficiente no carretel "${freshFil.brand} - ${freshFil.material}": saldo disponível no banco é de ${currentWeight}g, necessário ${row.deltaGrams}g (faltam ${missing}g). A baixa foi interrompida para proteger seu estoque.`);
-            }
-
-            const newWeight = currentWeight - row.deltaGrams;
-
-            const { error: updErr } = await supabase
-              .from('filaments')
-              .update({ remainingWeight: newWeight })
-              .eq('id', row.filamentId);
-
-            if (updErr) {
-              throw new Error(`Falha ao debitar carretel ${row.name} no Supabase: ${updErr.message}`);
-            }
-
-            confirmedConsumed[row.filamentId] = row.deltaGrams;
-            debitedSpools.push({ filamentId: row.filamentId, grams: row.deltaGrams, previousWeight: currentWeight });
+          // Atualização otimista no estado local dos insumos
+          if (debitedSupplies.length > 0) {
+            setSupplies(prev => prev.map(s => {
+              const d = debitedSupplies.find(item => item.supplyId === s.id);
+              return d ? { ...s, quantity: Math.max(0, s.quantity - d.amount) } : s;
+            }));
           }
         }
 
@@ -858,16 +1068,16 @@ export const Orders: React.FC = () => {
               pending.fullPayload,
               pending.basePayload,
               null,
-              confirmedConsumed,
-              skipStock ? 'none' : (Object.keys(confirmedConsumed).length > 0 ? 'confirmed' : 'none')
+              confirmedConsumedFilaments,
+              skipStock ? 'none' : ((Object.keys(confirmedConsumedFilaments).length > 0 || Object.keys(confirmedConsumedSupplies).length > 0) ? 'confirmed' : 'none'),
+              confirmedConsumedSupplies
             );
           } catch (saveErr: any) {
-            // Se a gravação do pedido falhar após a baixa dos carretéis (Problema B)
             console.error('Falha ao salvar pedido após baixa:', saveErr);
-            if (debitedSpools.length > 0) {
+            if (debitedSpools.length > 0 || debitedSupplies.length > 0) {
               setPageNotice({
                 type: 'error',
-                message: `Atenção crítica: O estoque de ${debitedSpools.length} carretel(is) foi debitado no banco, mas a gravação do pedido falhou: ${saveErr.message}. Não tente baixar novamente para evitar duplicidade de baixa; tente salvar novamente o pedido sem baixa.`
+                message: `Atenção crítica: O estoque foi debitado no banco, mas a gravação do pedido falhou: ${saveErr.message}. Não tente baixar novamente para evitar duplicidade; tente salvar novamente o pedido sem baixa.`
               });
             }
             throw saveErr;
@@ -875,60 +1085,117 @@ export const Orders: React.FC = () => {
         }
       } else if (stockModal.type === 'edit') {
         const existingOrder = orders.find(o => o.id === stockModal.orderId);
-        const prevConsumed = getOrderConsumedFilaments(existingOrder);
-        const newCalculated = calculateOrderFilamentConsumption(
+        const prevConsumedFilaments = getOrderConsumedFilaments(existingOrder);
+        const prevConsumedSupplies = getOrderConsumedSupplies(existingOrder, parts);
+        const newCalculatedFilaments = calculateOrderFilamentConsumption(
           stockModal.pendingOrderData?.fullPayload?.items || [],
           parts,
           filaments
         );
-        const finalConsumedMap = { ...newCalculated };
+        const newCalculatedSupplies = calculateOrderSuppliesConsumption(
+          stockModal.pendingOrderData?.fullPayload?.items || [],
+          parts
+        );
+        const finalConsumedFilaments = { ...newCalculatedFilaments };
+        const finalConsumedSupplies = { ...newCalculatedSupplies };
         const debitedSpools: { filamentId: string; grams: number }[] = [];
+        const debitedSupplies: { supplyId: string; amount: number }[] = [];
+        const updatedSuppliesLocal: { id: string; newQty: number }[] = [];
 
         if (!skipStock) {
           for (const row of approvedRows) {
             if (!row.apply) continue;
+            const delta = row.deltaAmount ?? row.deltaGrams;
 
-            // Re-consulta saldo atual no Supabase
-            const { data: freshFil, error: fetchErr } = await supabase
-              .from('filaments')
-              .select('remainingWeight, weight, brand, material')
-              .eq('id', row.filamentId)
-              .single();
+            if (row.itemType === 'supply') {
+              const supplyId = row.supplyId || row.id;
+              const { data: freshSupply, error: fetchErr } = await supabase
+                .from('supplies')
+                .select('quantity, name')
+                .eq('id', supplyId)
+                .single();
 
-            if (fetchErr || !freshFil) {
-              throw new Error(`Não foi possível consultar o saldo do carretel ${row.name} no banco.`);
-            }
-
-            const currentWeight = Number(freshFil.remainingWeight ?? freshFil.weight ?? 1000);
-            let newWeight = currentWeight;
-
-            if (row.deltaGrams > 0) {
-              // Consumo adicional
-              if (currentWeight < row.deltaGrams) {
-                const missing = row.deltaGrams - currentWeight;
-                throw new Error(`Estoque insuficiente para consumo adicional no carretel "${freshFil.brand} - ${freshFil.material}": disponível ${currentWeight}g, necessário ${row.deltaGrams}g (faltam ${missing}g).`);
+              if (fetchErr || !freshSupply) {
+                throw new Error(`Não foi possível consultar o saldo do insumo ${row.name} no banco.`);
               }
-              newWeight = currentWeight - row.deltaGrams;
-              debitedSpools.push({ filamentId: row.filamentId, grams: row.deltaGrams });
-            } else if (row.deltaGrams < 0) {
-              // Estorno de sobra (apenas as gramas autorizadas em returnGrams)
-              const gramsToReturn = Math.min(Math.abs(row.deltaGrams), Math.max(0, row.returnGrams || 0));
-              newWeight = currentWeight + gramsToReturn;
-              if (gramsToReturn < Math.abs(row.deltaGrams)) {
-                finalConsumedMap[row.filamentId] = (prevConsumed[row.filamentId] || 0) - gramsToReturn;
-              }
-            }
 
-            if (newWeight !== currentWeight) {
-              const { error: updErr } = await supabase
+              const currentQuantity = Number(freshSupply.quantity) || 0;
+              let newQuantity = currentQuantity;
+
+              if (delta > 0) {
+                if (currentQuantity < delta) {
+                  const missing = delta - currentQuantity;
+                  throw new Error(`Estoque insuficiente para consumo adicional no insumo "${freshSupply.name}": disponível ${currentQuantity} un, necessário ${delta} un (faltam ${missing} un).`);
+                }
+                newQuantity = currentQuantity - delta;
+                debitedSupplies.push({ supplyId, amount: delta });
+              } else if (delta < 0) {
+                const amountToReturn = Math.min(Math.abs(delta), Math.max(0, row.returnAmount ?? row.returnGrams ?? 0));
+                newQuantity = currentQuantity + amountToReturn;
+                if (amountToReturn < Math.abs(delta)) {
+                  finalConsumedSupplies[supplyId] = (prevConsumedSupplies[supplyId] || 0) - amountToReturn;
+                }
+              }
+
+              if (newQuantity !== currentQuantity) {
+                const { error: updErr } = await supabase
+                  .from('supplies')
+                  .update({ quantity: newQuantity, updated_at: new Date().toISOString() })
+                  .eq('id', supplyId);
+
+                if (updErr) {
+                  throw new Error(`Erro ao atualizar estoque do insumo ${row.name}: ${updErr.message}`);
+                }
+                updatedSuppliesLocal.push({ id: supplyId, newQty: newQuantity });
+              }
+            } else {
+              const filamentId = row.filamentId || row.id;
+              const { data: freshFil, error: fetchErr } = await supabase
                 .from('filaments')
-                .update({ remainingWeight: newWeight })
-                .eq('id', row.filamentId);
+                .select('remainingWeight, weight, brand, material')
+                .eq('id', filamentId)
+                .single();
 
-              if (updErr) {
-                throw new Error(`Erro ao atualizar estoque do carretel ${row.name}: ${updErr.message}`);
+              if (fetchErr || !freshFil) {
+                throw new Error(`Não foi possível consultar o saldo do carretel ${row.name} no banco.`);
+              }
+
+              const currentWeight = Number(freshFil.remainingWeight ?? freshFil.weight ?? 1000);
+              let newWeight = currentWeight;
+
+              if (delta > 0) {
+                if (currentWeight < delta) {
+                  const missing = delta - currentWeight;
+                  throw new Error(`Estoque insuficiente para consumo adicional no carretel "${freshFil.brand} - ${freshFil.material}": disponível ${currentWeight}g, necessário ${delta}g (faltam ${missing}g).`);
+                }
+                newWeight = currentWeight - delta;
+                debitedSpools.push({ filamentId, grams: delta });
+              } else if (delta < 0) {
+                const gramsToReturn = Math.min(Math.abs(delta), Math.max(0, row.returnGrams ?? row.returnAmount ?? 0));
+                newWeight = currentWeight + gramsToReturn;
+                if (gramsToReturn < Math.abs(delta)) {
+                  finalConsumedFilaments[filamentId] = (prevConsumedFilaments[filamentId] || 0) - gramsToReturn;
+                }
+              }
+
+              if (newWeight !== currentWeight) {
+                const { error: updErr } = await supabase
+                  .from('filaments')
+                  .update({ remainingWeight: newWeight })
+                  .eq('id', filamentId);
+
+                if (updErr) {
+                  throw new Error(`Erro ao atualizar estoque do carretel ${row.name}: ${updErr.message}`);
+                }
               }
             }
+          }
+
+          if (updatedSuppliesLocal.length > 0) {
+            setSupplies(prev => prev.map(s => {
+              const u = updatedSuppliesLocal.find(x => x.id === s.id);
+              return u ? { ...s, quantity: u.newQty } : s;
+            }));
           }
         }
 
@@ -939,11 +1206,12 @@ export const Orders: React.FC = () => {
               pending.fullPayload,
               pending.basePayload,
               stockModal.orderId!,
-              skipStock ? prevConsumed : finalConsumedMap,
-              skipStock ? (existingOrder?.stockDeductionStatus || 'none') : 'confirmed'
+              skipStock ? prevConsumedFilaments : finalConsumedFilaments,
+              skipStock ? (existingOrder?.stockDeductionStatus || 'none') : 'confirmed',
+              skipStock ? prevConsumedSupplies : finalConsumedSupplies
             );
           } catch (saveErr: any) {
-            if (debitedSpools.length > 0) {
+            if (debitedSpools.length > 0 || debitedSupplies.length > 0) {
               setPageNotice({
                 type: 'error',
                 message: `Atenção: A movimentação de estoque foi efetuada no banco, mas a atualização do pedido falhou: ${saveErr.message}. Não tente aplicar novamente para evitar duplicidade.`
@@ -956,42 +1224,87 @@ export const Orders: React.FC = () => {
         const orderToCancel = orders.find(o => o.id === stockModal.orderId);
         if (!orderToCancel) return;
 
-        const prevConsumed = getOrderConsumedFilaments(orderToCancel);
-        const updatedConsumed = { ...prevConsumed };
+        const prevConsumedFilaments = getOrderConsumedFilaments(orderToCancel);
+        const prevConsumedSupplies = getOrderConsumedSupplies(orderToCancel, parts);
+        const updatedConsumedFilaments = { ...prevConsumedFilaments };
+        const updatedConsumedSupplies = { ...prevConsumedSupplies };
         let returnedAny = false;
+        const updatedSuppliesLocal: { id: string; newQty: number }[] = [];
 
         if (!skipStock) {
           for (const row of approvedRows) {
-            const gramsToReturn = Math.max(0, Math.min(row.maxReturnGrams, Number(row.returnGrams) || 0));
-            if (gramsToReturn > 0) {
-              const { data: freshFil, error: fetchErr } = await supabase
-                .from('filaments')
-                .select('remainingWeight, weight, brand, material')
-                .eq('id', row.filamentId)
-                .single();
+            if (row.itemType === 'supply') {
+              const supplyId = row.supplyId || row.id;
+              const maxRet = row.maxReturnAmount ?? row.maxReturnGrams ?? 0;
+              const amtToReturn = Math.max(0, Math.min(maxRet, Number(row.returnAmount ?? row.returnGrams) || 0));
+              if (amtToReturn > 0) {
+                const { data: freshSupply, error: fetchErr } = await supabase
+                  .from('supplies')
+                  .select('quantity, name')
+                  .eq('id', supplyId)
+                  .single();
 
-              const currentWeight = Number(freshFil?.remainingWeight ?? freshFil?.weight ?? 1000);
-              const newWeight = currentWeight + gramsToReturn;
+                const currentQty = Number(freshSupply?.quantity) || 0;
+                const newQty = currentQty + amtToReturn;
 
-              const { error: updErr } = await supabase
-                .from('filaments')
-                .update({ remainingWeight: newWeight })
-                .eq('id', row.filamentId);
+                const { error: updErr } = await supabase
+                  .from('supplies')
+                  .update({ quantity: newQty, updated_at: new Date().toISOString() })
+                  .eq('id', supplyId);
 
-              if (updErr) {
-                throw new Error(`Não foi possível devolver o material ao carretel ${row.name}: ${updErr.message}`);
-              } else {
-                updatedConsumed[row.filamentId] = Math.max(0, (prevConsumed[row.filamentId] || 0) - gramsToReturn);
-                returnedAny = true;
+                if (updErr) {
+                  throw new Error(`Não foi possível devolver o insumo ${row.name}: ${updErr.message}`);
+                } else {
+                  updatedConsumedSupplies[supplyId] = Math.max(0, (prevConsumedSupplies[supplyId] || 0) - amtToReturn);
+                  returnedAny = true;
+                  updatedSuppliesLocal.push({ id: supplyId, newQty });
+                }
+              }
+            } else {
+              const filamentId = row.filamentId || row.id;
+              const gramsToReturn = Math.max(0, Math.min(row.maxReturnGrams, Number(row.returnGrams ?? row.returnAmount) || 0));
+              if (gramsToReturn > 0) {
+                const { data: freshFil, error: fetchErr } = await supabase
+                  .from('filaments')
+                  .select('remainingWeight, weight, brand, material')
+                  .eq('id', filamentId)
+                  .single();
+
+                const currentWeight = Number(freshFil?.remainingWeight ?? freshFil?.weight ?? 1000);
+                const newWeight = currentWeight + gramsToReturn;
+
+                const { error: updErr } = await supabase
+                  .from('filaments')
+                  .update({ remainingWeight: newWeight })
+                  .eq('id', filamentId);
+
+                if (updErr) {
+                  throw new Error(`Não foi possível devolver o material ao carretel ${row.name}: ${updErr.message}`);
+                } else {
+                  updatedConsumedFilaments[filamentId] = Math.max(0, (prevConsumedFilaments[filamentId] || 0) - gramsToReturn);
+                  returnedAny = true;
+                }
               }
             }
           }
+
+          if (updatedSuppliesLocal.length > 0) {
+            setSupplies(prev => prev.map(s => {
+              const u = updatedSuppliesLocal.find(x => x.id === s.id);
+              return u ? { ...s, quantity: u.newQty } : s;
+            }));
+          }
         }
 
-        // Atualiza o status do pedido para CANCELLED no Supabase
+        // Atualiza o status do pedido para CANCELLED no Supabase, preservando detalhesPrecificacao com consumedSupplies
+        const existingDetalhes = (orderToCancel as any)?.detalhesPrecificacao || {};
         const updateData: any = {
           status: OrderStatus.CANCELLED,
-          consumedFilaments: updatedConsumed,
+          consumedFilaments: updatedConsumedFilaments,
+          detalhesPrecificacao: {
+            ...existingDetalhes,
+            consumedSupplies: updatedConsumedSupplies
+          },
           stockDeductionStatus: returnedAny ? 'refunded' : (orderToCancel.stockDeductionStatus || 'none'),
           stockUpdatedAt: new Date().toISOString()
         };
@@ -1010,7 +1323,7 @@ export const Orders: React.FC = () => {
         setPageNotice({
           type: 'success',
           message: returnedAny 
-            ? `Pedido #${orderToCancel.id.slice(0, 5).toUpperCase()} cancelado e materiais estornados com sucesso!` 
+            ? `Pedido #${orderToCancel.id.slice(0, 5).toUpperCase()} cancelado e estoque estornado com sucesso!` 
             : `Pedido #${orderToCancel.id.slice(0, 5).toUpperCase()} cancelado (estoque mantido sem alterações).`
         });
       }
@@ -1033,11 +1346,15 @@ export const Orders: React.FC = () => {
       const nextRows = [...prev.rows];
       const target = { ...nextRows[index], ...updates };
 
-      // Se mudou returnGrams, recalcula finalWeight
-      if ('returnGrams' in updates) {
-        const validReturn = Math.max(0, Math.min(target.maxReturnGrams, Number(updates.returnGrams) || 0));
+      if ('returnAmount' in updates || 'returnGrams' in updates) {
+        const inputVal = updates.returnAmount !== undefined ? updates.returnAmount : updates.returnGrams;
+        const maxVal = target.maxReturnAmount ?? target.maxReturnGrams ?? 0;
+        const validReturn = Math.max(0, Math.min(maxVal, Number(inputVal) || 0));
+        target.returnAmount = validReturn;
         target.returnGrams = validReturn;
-        target.finalWeight = target.currentWeight + validReturn;
+        const currentBal = target.currentStock ?? target.currentWeight;
+        target.finalStock = currentBal + validReturn;
+        target.finalWeight = currentBal + validReturn;
         target.apply = validReturn > 0;
       }
 
@@ -1047,38 +1364,77 @@ export const Orders: React.FC = () => {
   };
 
   const handleCancelOrderRequest = (order: Order) => {
-    const consumed = getOrderConsumedFilaments(order);
-    const consumedEntries = Object.entries(consumed).filter(([_, g]) => g > 0);
+    const consumedFilaments = getOrderConsumedFilaments(order);
+    const consumedFilamentEntries = Object.entries(consumedFilaments).filter(([_, g]) => g > 0);
+    const consumedSupplies = getOrderConsumedSupplies(order, parts);
+    const consumedSupplyEntries = Object.entries(consumedSupplies).filter(([_, q]) => q > 0);
 
-    if (consumedEntries.length === 0) {
+    if (consumedFilamentEntries.length === 0 && consumedSupplyEntries.length === 0) {
       setCancelPromptOrder(order);
       return;
     }
 
-    // Prepara linhas para o modal de cancelamento
-    const rows: StockPreviewRow[] = consumedEntries.map(([fId, grams]) => {
+    const rows: StockPreviewRow[] = [];
+
+    // Filamentos
+    consumedFilamentEntries.forEach(([fId, grams]) => {
       const f = filaments.find(item => item.id === fId);
       const current = f?.remainingWeight ?? f?.weight ?? 1000;
-      return {
+      rows.push({
+        id: fId,
+        itemType: 'filament',
         filamentId: fId,
         name: f ? `${f.brand} - ${f.material}` : 'Filamento',
         material: f?.material || 'PLA',
         colorName: f?.colorName || 'Cor Padrão',
         colorHex: f?.colorHex || '#3b82f6',
-        currentWeight: current,
-        deltaGrams: -grams, // estorno potencial
-        finalWeight: current, // default 0 estorno -> final = current
+        unit: 'g',
+        currentStock: current,
+        deltaAmount: -grams,
+        finalStock: current,
         apply: false,
-        returnGrams: 0, // Regra 6: default 0, não devolve automaticamente
+        returnAmount: 0,
+        maxReturnAmount: grams,
+        currentWeight: current,
+        deltaGrams: -grams,
+        finalWeight: current,
+        returnGrams: 0,
         maxReturnGrams: grams
-      };
+      });
+    });
+
+    // Insumos
+    consumedSupplyEntries.forEach(([sId, qty]) => {
+      const s = supplies.find(item => item.id === sId);
+      const current = Number(s?.quantity) || 0;
+      rows.push({
+        id: sId,
+        itemType: 'supply',
+        supplyId: sId,
+        name: s ? s.name : 'Insumo',
+        material: s?.category || 'Insumo',
+        colorName: s?.category || 'Componente',
+        colorHex: '#10b981',
+        unit: 'un',
+        currentStock: current,
+        deltaAmount: -qty,
+        finalStock: current,
+        apply: false,
+        returnAmount: 0,
+        maxReturnAmount: qty,
+        currentWeight: current,
+        deltaGrams: -qty,
+        finalWeight: current,
+        returnGrams: 0,
+        maxReturnGrams: qty
+      });
     });
 
     setStockModal({
       isOpen: true,
       type: 'cancel',
       title: `Cancelar Pedido #${order.id.slice(0, 5).toUpperCase()}`,
-      subtitle: 'Este pedido registrou consumo de filamento. Escolha quanto material não impresso ou recuperado deve voltar aos carretéis.',
+      subtitle: 'Este pedido registrou consumo de filamentos e/ou insumos. Escolha quanto material ou peças não utilizadas devem voltar ao estoque.',
       rows,
       orderId: order.id,
       orderCode: order.id.slice(0, 5).toUpperCase()
@@ -1096,7 +1452,7 @@ export const Orders: React.FC = () => {
   const addCatalogPart = (partId: string) => {
     const part = parts.find(p => p.id === partId);
     if (!part) return;
-    const costs = calculatePartCosts(part, filaments, printers, settings);
+    const costs = calculatePartCosts(part, filaments, printers, settings, supplies);
     const existing = orderForm.items.find(i => i.partId === partId);
     if (existing) {
       setOrderForm({
@@ -2709,19 +3065,39 @@ export const Orders: React.FC = () => {
                 </div>
               )}
 
-              {/* Lista de Filamentos */}
+              {/* Lista de Filamentos e Insumos */}
               <div className="space-y-2.5">
-                <label className="text-[10px] font-black uppercase text-zinc-400 tracking-wider block">
-                  Carretéis Vinculados ({stockModal.rows.length})
-                </label>
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-black uppercase text-zinc-400 tracking-wider block">
+                    Itens de Estoque Vinculados ({stockModal.rows.length})
+                  </label>
+                  <div className="flex items-center gap-2 text-[10px] text-zinc-400">
+                    <span className="flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-cyan-400"></span> 
+                      Filamentos ({stockModal.rows.filter(r => r.itemType !== 'supply').length})
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400"></span> 
+                      Insumos ({stockModal.rows.filter(r => r.itemType === 'supply').length})
+                    </span>
+                  </div>
+                </div>
 
                 {stockModal.rows.map((row, idx) => {
-                  const isNegative = row.finalWeight < 0;
-                  const isLow = row.finalWeight >= 0 && row.finalWeight < 100;
+                  const isSupply = row.itemType === 'supply';
+                  const unit = row.unit || (isSupply ? 'un' : 'g');
+                  const currentBal = row.currentStock ?? row.currentWeight;
+                  const deltaVal = row.deltaAmount ?? row.deltaGrams;
+                  const finalBal = row.finalStock ?? row.finalWeight;
+                  const isNegative = finalBal < 0;
+                  const isLow = !isNegative && (isSupply ? finalBal <= 2 : finalBal < 100);
+                  const returnVal = row.returnAmount ?? row.returnGrams ?? 0;
+                  const maxReturnVal = row.maxReturnAmount ?? row.maxReturnGrams ?? 0;
+                  const rowKey = row.id || (isSupply ? `sup_${row.supplyId}` : `fil_${row.filamentId}`);
 
                   return (
                     <div 
-                      key={row.filamentId}
+                      key={rowKey}
                       className={`p-3.5 rounded-2xl border transition-all ${
                         row.apply 
                           ? 'bg-zinc-950 border-zinc-700/80' 
@@ -2729,22 +3105,32 @@ export const Orders: React.FC = () => {
                       }`}
                     >
                       <div className="flex items-center justify-between flex-wrap gap-2">
-                        {/* Filamento */}
+                        {/* Item Info (Filamento ou Insumo) */}
                         <div className="flex items-center gap-2.5 min-w-[180px]">
-                          <div 
-                            className="w-4 h-4 rounded-full border border-zinc-700 flex-shrink-0" 
-                            style={{ backgroundColor: row.colorHex }}
-                            title={row.colorName}
-                          />
+                          {isSupply ? (
+                            <div className="w-8 h-8 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 flex-shrink-0">
+                              <PackageCheck className="w-4 h-4" />
+                            </div>
+                          ) : (
+                            <div 
+                              className="w-5 h-5 rounded-full border border-zinc-700 flex-shrink-0" 
+                              style={{ backgroundColor: row.colorHex }}
+                              title={row.colorName}
+                            />
+                          )}
                           <div>
                             <p className="text-xs font-bold text-white flex items-center gap-1.5">
                               <span>{row.name}</span>
-                              <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-zinc-800 text-zinc-400 font-normal">
-                                {row.colorName}
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-normal ${
+                                isSupply 
+                                  ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-500/20' 
+                                  : 'bg-zinc-800 text-zinc-400'
+                              }`}>
+                                {row.colorName || (isSupply ? 'Insumo' : 'Filamento')}
                               </span>
                             </p>
                             <p className="text-[10px] text-zinc-400">
-                              Saldo Atual em Carretel: <strong className="text-zinc-200 font-mono">{row.currentWeight}g</strong>
+                              {isSupply ? 'Saldo em Estoque:' : 'Saldo em Carretel:'} <strong className="text-zinc-200 font-mono">{currentBal} {unit}</strong>
                             </p>
                           </div>
                         </div>
@@ -2754,12 +3140,12 @@ export const Orders: React.FC = () => {
                           <div className="flex items-center gap-3">
                             <div className="text-right">
                               <span className="text-xs font-mono font-black text-red-400 block">
-                                - {row.deltaGrams}g
+                                - {deltaVal} {unit}
                               </span>
                               <span className={`text-[10px] font-mono font-bold ${
                                 isNegative ? 'text-red-400' : isLow ? 'text-amber-400' : 'text-emerald-400'
                               }`}>
-                                Previsto: {row.finalWeight}g
+                                Previsto: {finalBal} {unit}
                               </span>
                             </div>
                             <label className="flex items-center gap-1.5 cursor-pointer text-xs font-bold text-zinc-300">
@@ -2778,22 +3164,22 @@ export const Orders: React.FC = () => {
                         {stockModal.type === 'edit' && (
                           <div className="flex items-center gap-3">
                             <div className="text-right">
-                              {row.deltaGrams > 0 ? (
+                              {deltaVal > 0 ? (
                                 <>
                                   <span className="text-xs font-mono font-black text-red-400 block">
-                                    + {row.deltaGrams}g (adicional)
+                                    + {deltaVal} {unit} (adicional)
                                   </span>
                                   <span className="text-[10px] font-mono text-zinc-400">
-                                    Previsto: <strong className="text-emerald-400">{row.finalWeight}g</strong>
+                                    Previsto: <strong className="text-emerald-400">{finalBal} {unit}</strong>
                                   </span>
                                 </>
                               ) : (
                                 <>
                                   <span className="text-xs font-mono font-black text-emerald-400 block">
-                                    - {Math.abs(row.deltaGrams)}g (sobra)
+                                    - {Math.abs(deltaVal)} {unit} (sobra)
                                   </span>
                                   <span className="text-[10px] font-mono text-zinc-400">
-                                    Estornar: <strong className="text-emerald-300">{row.returnGrams}g</strong>
+                                    Estornar: <strong className="text-emerald-300">{returnVal} {unit}</strong>
                                   </span>
                                 </>
                               )}
@@ -2815,10 +3201,10 @@ export const Orders: React.FC = () => {
                           <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap">
                             <div className="text-right">
                               <span className="text-[10px] text-zinc-400 block">
-                                Baixado no Pedido: <strong className="text-zinc-200 font-mono">{row.maxReturnGrams}g</strong>
+                                Baixado no Pedido: <strong className="text-zinc-200 font-mono">{maxReturnVal} {unit}</strong>
                               </span>
                               <span className="text-[10px] font-mono font-bold text-emerald-400">
-                                Saldo Previsto: {row.finalWeight}g
+                                Saldo Previsto: {finalBal} {unit}
                               </span>
                             </div>
 
@@ -2826,44 +3212,44 @@ export const Orders: React.FC = () => {
                               <input
                                 type="number"
                                 min="0"
-                                max={row.maxReturnGrams}
-                                value={row.returnGrams}
-                                onChange={e => updateModalRow(idx, { returnGrams: Number(e.target.value) || 0 })}
+                                max={maxReturnVal}
+                                value={returnVal}
+                                onChange={e => updateModalRow(idx, { returnAmount: Number(e.target.value) || 0, returnGrams: Number(e.target.value) || 0 })}
                                 className="w-16 bg-zinc-800 text-center text-xs font-mono font-bold rounded-lg py-1 px-1 text-white outline-none focus:ring-1 focus:ring-emerald-500"
                               />
-                              <span className="text-[10px] text-zinc-400 font-bold pr-1">g</span>
+                              <span className="text-[10px] text-zinc-400 font-bold pr-1">{unit}</span>
                               <button
                                 type="button"
-                                onClick={() => updateModalRow(idx, { returnGrams: row.maxReturnGrams })}
+                                onClick={() => updateModalRow(idx, { returnAmount: maxReturnVal, returnGrams: maxReturnVal })}
                                 className="text-[10px] px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-emerald-400 font-bold transition"
-                                title="Devolver toda a quantidade baixada ao carretel"
+                                title="Devolver toda a quantidade baixada ao estoque"
                               >
                                 Tudo
                               </button>
                               <button
                                 type="button"
-                                onClick={() => updateModalRow(idx, { returnGrams: 0 })}
+                                onClick={() => updateModalRow(idx, { returnAmount: 0, returnGrams: 0 })}
                                 className="text-[10px] px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 font-bold transition"
                                 title="Não devolver nada (material consumido ou descartado)"
                               >
-                                0g
+                                0{unit}
                               </button>
                             </div>
                           </div>
                         )}
                       </div>
 
-                      {/* Alerta Detalhado de Saldo Insuficiente (Etapa 2 - Problema A) */}
+                      {/* Alerta Detalhado de Saldo Insuficiente */}
                       {isNegative && (
                         <div className="w-full mt-2.5 p-2.5 rounded-xl bg-red-500/15 border border-red-500/50 text-red-200 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-1.5 animate-in fade-in">
                           <div className="flex items-center gap-1.5">
                             <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
                             <span>
-                              <strong>Estoque Insuficiente:</strong> Saldo atual: <strong className="text-white font-mono">{row.currentWeight}g</strong> | Necessário: <strong className="text-white font-mono">{row.deltaGrams}g</strong>
+                              <strong>Estoque Insuficiente:</strong> Saldo atual: <strong className="text-white font-mono">{currentBal} {unit}</strong> | Necessário: <strong className="text-white font-mono">{deltaVal} {unit}</strong>
                             </span>
                           </div>
                           <span className="font-mono font-black text-red-300 bg-red-950/60 px-2 py-0.5 rounded-md border border-red-500/40 shrink-0">
-                            Faltam {Math.abs(row.finalWeight)}g
+                            Faltam {Math.abs(finalBal)} {unit}
                           </span>
                         </div>
                       )}
@@ -2871,14 +3257,14 @@ export const Orders: React.FC = () => {
                   );
                 })}
 
-                {/* Banner Geral de Bloqueio se houver carretéis insuficientes selecionados */}
-                {stockModal.rows.some(r => r.apply && ((stockModal.type === 'create' && r.finalWeight < 0) || (stockModal.type === 'edit' && r.deltaGrams > 0 && r.finalWeight < 0))) && (
+                {/* Banner Geral de Bloqueio se houver itens insuficientes selecionados */}
+                {stockModal.rows.some(r => r.apply && ((stockModal.type === 'create' && (r.finalStock ?? r.finalWeight) < 0) || (stockModal.type === 'edit' && (r.deltaAmount ?? r.deltaGrams) > 0 && (r.finalStock ?? r.finalWeight) < 0))) && (
                   <div className="p-3.5 rounded-2xl bg-red-500/15 border border-red-500/60 text-red-200 text-xs flex items-start gap-2.5 animate-in fade-in">
                     <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
                     <div className="space-y-1">
-                      <strong className="block font-bold">Bloqueio de Integridade: Material Insuficiente para Baixa</strong>
+                      <strong className="block font-bold">Bloqueio de Integridade: Material/Insumo Insuficiente para Baixa</strong>
                       <p className="text-[11px] text-red-300 leading-snug">
-                        O sistema protege seu estoque contra saldos negativos e baixas parciais fictícias. Para prosseguir, você pode <strong>desmarcar a opção "Baixar"</strong> neste carretel, alterar as quantidades do pedido ou clicar em <strong>"Salvar sem Baixar Estoque"</strong>.
+                        O sistema protege seu estoque contra saldos negativos e baixas parciais fictícias. Para prosseguir, você pode <strong>desmarcar a opção "Baixar"</strong> neste item, alterar as quantidades do pedido ou clicar em <strong>"Salvar sem Baixar Estoque"</strong>.
                       </p>
                     </div>
                   </div>
@@ -2933,7 +3319,7 @@ export const Orders: React.FC = () => {
 
                 {(() => {
                   const hasInsufficient = stockModal.rows.some(
-                    r => r.apply && ((stockModal.type === 'create' && r.finalWeight < 0) || (stockModal.type === 'edit' && r.deltaGrams > 0 && r.finalWeight < 0))
+                    r => r.apply && ((stockModal.type === 'create' && (r.finalStock ?? r.finalWeight) < 0) || (stockModal.type === 'edit' && (r.deltaAmount ?? r.deltaGrams) > 0 && (r.finalStock ?? r.finalWeight) < 0))
                   );
 
                   return (
@@ -2941,7 +3327,7 @@ export const Orders: React.FC = () => {
                       type="button"
                       disabled={isProcessingStock || hasInsufficient}
                       onClick={() => handleConfirmStockMovement(stockModal.rows, false)}
-                      title={hasInsufficient ? 'Não é possível baixar com estoque insuficiente. Desmarque o carretel ou salve sem baixar.' : undefined}
+                      title={hasInsufficient ? 'Não é possível baixar com estoque insuficiente. Desmarque o item ou salve sem baixar.' : undefined}
                       className={`w-full sm:w-auto px-5 py-2.5 rounded-xl font-black text-xs transition shadow-lg flex items-center justify-center gap-2 disabled:opacity-50 ${
                         hasInsufficient
                           ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed border border-zinc-700'

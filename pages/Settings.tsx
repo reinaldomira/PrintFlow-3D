@@ -419,7 +419,7 @@ ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFA
           <div className="flex items-center gap-2">
             <Building2 className="w-4 h-4 text-cyan-400" />
             <h3 className="font-black uppercase text-xs tracking-widest text-zinc-300">
-              Dados comerciais do orçamento
+              Identidade Visual & Dados Comerciais (Whitelabel)
             </h3>
           </div>
           {settingsSyncState === 'synced' && (
@@ -556,16 +556,26 @@ ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFA
         {/* Campos de Dados Comerciais */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="space-y-1.5 sm:col-span-2">
-            <label className="block text-[10px] font-black uppercase text-zinc-500">
-              Nome da Empresa ou Marca
-            </label>
+            <div className="flex items-center justify-between">
+              <label className="block text-[10px] font-black uppercase text-zinc-400">
+                Nome da Empresa ou Marca (Exibido no App e Orçamentos)
+              </label>
+              {businessForm.companyName && (
+                <span className="text-[10px] text-cyan-400 font-bold">
+                  Personalização Ativa
+                </span>
+              )}
+            </div>
             <input
               type="text"
-              placeholder="Ex: PrintFlow 3D Studio"
+              placeholder="Ex: Minha Oficina 3D"
               className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm font-bold text-zinc-100 focus:border-cyan-500 outline-none transition-colors"
               value={businessForm.companyName || ''}
               onChange={e => handleFieldChange('companyName', e.target.value)}
             />
+            <p className="text-[11px] text-zinc-500 leading-tight">
+              Este nome substitui a marca nos menus, cabeçalho, aba do navegador e nos orçamentos em PDF.
+            </p>
           </div>
 
           <div className="space-y-1.5">

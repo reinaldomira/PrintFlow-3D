@@ -12,10 +12,11 @@ import {
   X, Plus, Bell, ArrowRight, Database, Trash2, Settings2, GripVertical,
   Eye, EyeOff, ChevronUp, ChevronDown, RotateCcw, Droplets, Layers,
   ArrowUpRight, CheckCircle2, PackageCheck, Wallet, ArrowDownRight,
-  Receipt, ShoppingBag, Zap, Wrench, Sparkles, Building2
+  Receipt, ShoppingBag, Zap, Wrench, Sparkles, Building2, WifiOff, RefreshCw
 } from 'lucide-react';
 import { OrderStatus, PrintFailure, DashboardCardConfig, CashExpense } from '../types';
 import { normalizeOrderStatus, isOrderPaid } from '../utils/statusUtils';
+import { isSchemaError } from '../services/settingsService';
 
 const FAILURE_REASONS = [
   'Descolamento da mesa (Warping)',
@@ -64,7 +65,8 @@ export const Dashboard: React.FC = () => {
   const { 
     orders, parts, filaments, printers, supplies, settings, user, dbError, 
     failures, addFailure, deleteFailure, 
-    cashExpenses, addCashExpense, deleteCashExpense 
+    cashExpenses, addCashExpense, deleteCashExpense,
+    connectionError, refreshData, isOnline
   } = useApp();
   const navigate = useNavigate();
 
@@ -834,7 +836,7 @@ export const Dashboard: React.FC = () => {
     await deleteFailure(id);
   };
 
-  if (dbError) {
+  if (dbError && isSchemaError(dbError)) {
     return (
       <div className="flex flex-col items-center justify-center py-20 px-6 text-center animate-in fade-in zoom-in duration-500">
         <div className="w-24 h-24 bg-amber-500/10 rounded-full flex items-center justify-center text-amber-500 mb-6 border border-amber-500/20">
@@ -1908,6 +1910,28 @@ export const Dashboard: React.FC = () => {
 
   return (
     <div className="space-y-6 pb-20 animate-in fade-in duration-300">
+      {/* Aviso de conectividade não-bloqueante */}
+      {connectionError && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-amber-300 shadow-lg animate-in fade-in">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center flex-shrink-0 text-amber-400">
+              <WifiOff className="w-4 h-4" />
+            </div>
+            <div className="text-xs">
+              <p className="font-bold text-amber-200">Aviso de Sincronização Cloud</p>
+              <p className="text-slate-300 mt-0.5">{connectionError}</p>
+            </div>
+          </div>
+          <button
+            onClick={() => refreshData()}
+            className="px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-black text-xs rounded-xl flex items-center gap-1.5 active:scale-95 transition-all flex-shrink-0 shadow-sm"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            Tentar Reconectar
+          </button>
+        </div>
+      )}
+
       {/* Top Header matching ERP graphite reference */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pt-1">
         {/* Left: Title & Subtitle */}

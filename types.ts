@@ -167,6 +167,7 @@ export interface Order {
   custosFinanceiros?: FinancialConfig;
   detalhesPrecificacao?: PricingBreakdown;
   consumedFilaments?: Record<string, number>;
+  consumedSupplies?: Record<string, number>;
   stockDeductionStatus?: 'none' | 'confirmed' | 'partial' | 'refunded';
   stockUpdatedAt?: string;
 }

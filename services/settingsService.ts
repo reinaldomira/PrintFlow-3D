@@ -71,6 +71,52 @@ export function sanitizeErrorMessage(msg: unknown): string {
     .replace(/password=[^\s&]+/gi, 'password=[REDACTED]');
 }
 
+/**
+ * Identifica se a falha é decorrente de conectividade/rede (offline, timeout, failed to fetch, etc.)
+ */
+export function isNetworkError(msg: unknown): boolean {
+  if (!msg) return false;
+  const text = (typeof msg === 'string' ? msg : String((msg as any)?.message || msg)).toLowerCase();
+  return (
+    text.includes('failed to fetch') ||
+    text.includes('networkerror') ||
+    text.includes('load failed') ||
+    text.includes('network request failed') ||
+    text.includes('offline') ||
+    text.includes('net::') ||
+    text.includes('timeout') ||
+    text.includes('econnrefused') ||
+    text.includes('err_connection') ||
+    text.includes('err_name_not_resolved') ||
+    text.includes('err_blocked_by_client') ||
+    text.includes('falha de conexão') ||
+    text.includes('conexão indisponível')
+  );
+}
+
+/**
+ * Identifica se o erro é genuinamente de schema/estrutura do banco de dados (tabela ou coluna ausente)
+ */
+export function isSchemaError(msg: unknown, code?: string): boolean {
+  if (code === '42P01' || code === 'PGRST205' || code === 'PGRST204' || code === '42703') {
+    return true;
+  }
+  if (!msg) return false;
+  const text = (typeof msg === 'string' ? msg : String((msg as any)?.message || msg)).toLowerCase();
+  if (isNetworkError(text)) return false;
+  return (
+    text.includes('42p01') ||
+    text.includes('pgrst205') ||
+    text.includes('pgrst204') ||
+    text.includes('42703') ||
+    text.includes('schema cache') ||
+    text.includes('tabela ausente') ||
+    text.includes('coluna ausente') ||
+    text.includes('relation') ||
+    text.includes('does not exist')
+  );
+}
+
 export const EXT_SYNC_PREFIX = '__PRINTFLOW_EXT_SYNC__:';
 
 /**
