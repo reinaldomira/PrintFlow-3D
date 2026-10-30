@@ -2,7 +2,7 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { Part, PartRecipeItem, PartSupplyItem } from '../types';
 import { supabase } from '../services/supabase';
-import { formatCurrency, calculatePartCosts, MATERIALS } from '../constants';
+import { formatCurrency, calculatePartCosts, MATERIALS, formatHoursToTimeString, formatPrintTimeDisplay, parseTimeStringToHours } from '../constants';
 import { 
   Plus, Search, Trash2, Edit2, Upload, X, Layers, Image as ImageIcon, 
   Loader2, PlusCircle, Camera, Monitor, Clock, Zap, CheckCircle2, AlertTriangle,
@@ -18,6 +18,7 @@ const Catalog: React.FC = () => {
   const [imageNotice, setImageNotice] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [editingPart, setEditingPart] = useState<Partial<Part> | null>(null);
+  const [printTimeInput, setPrintTimeInput] = useState<string>('');
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [actionNotice, setActionNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -26,6 +27,15 @@ const Catalog: React.FC = () => {
     if (!editingPart) return null;
     return calculatePartCosts(editingPart, filaments, printers, settings, supplies);
   }, [editingPart, filaments, printers, settings, supplies]);
+
+  // Sincroniza o input textual formatado do tempo de impressão (ex: "12:45") ao abrir modal
+  useEffect(() => {
+    if (isModalOpen && editingPart) {
+      setPrintTimeInput(formatHoursToTimeString(editingPart.printTime));
+    } else if (!isModalOpen) {
+      setPrintTimeInput('');
+    }
+  }, [isModalOpen, editingPart?.id]);
 
   // Alerta de proteção antes de recarregar caso haja peça sendo editada
   useEffect(() => {
@@ -271,6 +281,24 @@ const Catalog: React.FC = () => {
     setEditingPart(prev => ({ ...prev!, [field]: value }));
   };
 
+  const handlePrintTimeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setPrintTimeInput(val);
+    const parsedHours = parseTimeStringToHours(val);
+    updateField('printTime', parsedHours);
+  };
+
+  const handlePrintTimeBlur = () => {
+    if (!printTimeInput.trim()) {
+      updateField('printTime', 0);
+      setPrintTimeInput('');
+      return;
+    }
+    const parsedHours = parseTimeStringToHours(printTimeInput);
+    updateField('printTime', parsedHours);
+    setPrintTimeInput(formatHoursToTimeString(parsedHours));
+  };
+
   const updateRecipeItem = (index: number, field: keyof PartRecipeItem, value: any) => {
     const currentRecipe = [...(editingPart?.recipe || [])];
     currentRecipe[index] = { ...currentRecipe[index], [field]: value };
@@ -427,10 +455,11 @@ const Catalog: React.FC = () => {
                 </div>
                 <div className="mt-3 pt-2 border-t border-zinc-800/60 flex flex-col gap-1">
                   <div className="flex items-center justify-between text-[11px]">
-                    <span className="text-zinc-500 font-medium">
+                    <span className="text-zinc-500 font-medium truncate pr-2">
                       {part.weight}g {part.unitsPerPrint && part.unitsPerPrint > 1 ? `(lote: ${part.unitsPerPrint}un)` : ''}
+                      {part.printTime && part.printTime > 0 ? ` • ${formatPrintTimeDisplay(part.printTime)}` : ''}
                     </span>
-                    <span className="text-zinc-400 font-semibold" title="Custo unitário de fabricação">
+                    <span className="text-zinc-400 font-semibold flex-shrink-0" title="Custo unitário de fabricação">
                       Custo: {formatCurrency(partCostInfo.unitCost)}
                     </span>
                   </div>
@@ -691,10 +720,22 @@ const Catalog: React.FC = () => {
                   <span className="text-[9px] text-zinc-500 block">Filamento total mesa</span>
                 </div>
                 <div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-800">
-                  <span className="text-[10px] font-black uppercase text-zinc-500 block mb-1">Impressão Lote (h)</span>
-                  <input type="number" step="0.1" className="bg-transparent w-full text-lg font-black outline-none" 
-                    value={editingPart?.printTime || 0} onChange={e => updateField('printTime', Number(e.target.value))} />
-                  <span className="text-[9px] text-zinc-500 block">Tempo total fatiador</span>
+                  <span className="text-[10px] font-black uppercase text-zinc-400 block mb-1 flex items-center gap-1" title="Tempo total do fatiador (horas:minutos)">
+                    <Clock className="w-3 h-3 text-emerald-400" /> Tempo Impressão
+                  </span>
+                  <input 
+                    type="text" 
+                    placeholder="12:45"
+                    className="bg-transparent w-full text-lg font-black outline-none text-white focus:text-emerald-400 font-mono tracking-tight" 
+                    value={printTimeInput} 
+                    onChange={handlePrintTimeChange}
+                    onBlur={handlePrintTimeBlur}
+                  />
+                  <span className="text-[9px] text-zinc-400 block truncate" title="Tempo formatado">
+                    {editingPart?.printTime && editingPart.printTime > 0 
+                      ? `⏱️ ${formatPrintTimeDisplay(editingPart.printTime)} (${editingPart.printTime.toFixed(2)}h)`
+                      : 'Ex: 12:45min (HH:MM)'}
+                  </span>
                 </div>
                 <div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-800">
                   <span className="text-[10px] font-black uppercase text-zinc-500 block mb-1 flex items-center gap-1">
@@ -790,7 +831,7 @@ const Catalog: React.FC = () => {
                       Resumo da Impressão Completa na Mesa ({costs?.unitsPerPrint || 1} {((costs?.unitsPerPrint || 1) === 1 ? 'peça' : 'peças')})
                     </span>
                     <span className="text-[11px] text-zinc-500 font-mono">
-                      Filamento: {costs?.batchWeight || 0}g • Tempo: {costs?.batchPrintTime || 0}h
+                      Filamento: {costs?.batchWeight || 0}g • Tempo: {formatPrintTimeDisplay(costs?.batchPrintTime || 0)}
                     </span>
                   </div>
 

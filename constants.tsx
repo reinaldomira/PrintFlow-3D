@@ -34,6 +34,83 @@ export const formatCurrency = (value: number) => {
   }).format(value);
 };
 
+/**
+ * Converte horas decimais para string no formato "HH:MM" (ex: 12.75 -> "12:45", 0.5 -> "00:30")
+ */
+export const formatHoursToTimeString = (hours: number | undefined | null): string => {
+  if (hours === undefined || hours === null || isNaN(hours) || hours <= 0) return '';
+  const totalMinutes = Math.round(hours * 60);
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+};
+
+/**
+ * Formata horas decimais em texto legível para operador 3D (ex: 12.75 -> "12h 45min", 0.5 -> "30min", 2 -> "2h")
+ */
+export const formatPrintTimeDisplay = (hours: number | undefined | null): string => {
+  if (hours === undefined || hours === null || isNaN(hours) || hours <= 0) return '0min';
+  const totalMinutes = Math.round(hours * 60);
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  if (h === 0) return `${m}min`;
+  if (m === 0) return `${h}h`;
+  return `${h}h ${m.toString().padStart(2, '0')}min`;
+};
+
+/**
+ * Converte qualquer formato digitado pelo usuário em horas decimais (ex: "12:45", "12:45min", "12h45", "12h 45m", "1245", "130", "0:45", "45min", "12.75", "12,5")
+ */
+export const parseTimeStringToHours = (text: string): number => {
+  if (!text) return 0;
+  const raw = text.trim().toLowerCase();
+  const clean = raw.replace(/\s+/g, '');
+
+  // 1. Caso com dois pontos (ex: "12:45", "12:45min", "0:30", ":45")
+  if (clean.includes(':')) {
+    const parts = clean.split(':');
+    const h = parseInt(parts[0], 10) || 0;
+    const minDigits = parts[1] ? parts[1].replace(/\D/g, '') : '';
+    const m = parseInt(minDigits, 10) || 0;
+    return Number((h + m / 60).toFixed(4));
+  }
+
+  // 2. Caso com 'h' (ex: "12h45", "12h45m", "12h 45min", "2h30", "12h")
+  if (clean.includes('h')) {
+    const parts = clean.split('h');
+    const h = parseInt(parts[0], 10) || 0;
+    const minDigits = parts[1] ? parts[1].replace(/\D/g, '') : '';
+    const m = parseInt(minDigits, 10) || 0;
+    return Number((h + m / 60).toFixed(4));
+  }
+
+  // 3. Caso com "min" ou "m" apenas (ex: "45min", "30min", "45m")
+  if (clean.includes('min') || clean.endsWith('m')) {
+    const minDigits = clean.replace(/\D/g, '');
+    const m = parseInt(minDigits, 10) || 0;
+    return Number((m / 60).toFixed(4));
+  }
+
+  // 4. Caso numérico decimal com vírgula ou ponto (ex: "12.5" ou "12,75")
+  if (clean.includes('.') || clean.includes(',')) {
+    const val = parseFloat(clean.replace(',', '.'));
+    return isNaN(val) ? 0 : Number(val.toFixed(4));
+  }
+
+  // 5. Caso apenas dígitos (ex: "1245" -> 12h 45m, "130" -> 1h 30m)
+  if (/^\d{3,4}$/.test(clean)) {
+    const m = parseInt(clean.slice(-2), 10);
+    const h = parseInt(clean.slice(0, -2), 10);
+    if (m < 60) {
+      return Number((h + m / 60).toFixed(4));
+    }
+  }
+
+  // 6. Caso número puro simples (ex: "12" -> 12h)
+  const num = parseInt(clean, 10);
+  return isNaN(num) ? 0 : num;
+};
+
 export interface PartCostResult {
   // Quantidade de peças produzidas na mesma impressão / lote (mínimo 1)
   unitsPerPrint: number;
