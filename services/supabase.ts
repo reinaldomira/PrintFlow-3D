@@ -1,7 +1,13 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = 'https://apilsmolimcnqylmkcib.supabase.co';
-const supabaseAnonKey = 'sb_publishable_ik9CAuqhJp1pNE642cIIDA_uLW3EKbI';
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  throw new Error(
+    'Configuração do Supabase ausente! Defina as variáveis de ambiente VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no arquivo .env ou no painel de hospedagem (Vercel/AI Studio).'
+  );
+}
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);

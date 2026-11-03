@@ -1,4 +1,4 @@
-const CACHE_NAME = 'printflow-pwa-v9';
+const CACHE_NAME = 'printflow-pwa-v11';
 
 const PRECACHE_ASSETS = [
   '/',
@@ -6,17 +6,14 @@ const PRECACHE_ASSETS = [
   '/manifest.json',
   '/logo.png',
   '/favicon.ico',
-  '/favicon.png',
+  '/icons/favicon.png',
   '/icons/neon-logo-192.png',
   '/icons/neon-logo-512.png',
   '/icons/neon-logo-maskable-192.png',
   '/icons/neon-logo-maskable-512.png',
   '/icons/neon-touch-icon.png',
   '/icons/neon-favicon.png',
-  '/neon-logo-192.png',
-  '/neon-logo-512.png',
-  '/neon-touch-icon.png',
-  '/apple-touch-icon.png'
+  '/icons/apple-touch-icon.png'
 ];
 
 // Install event: cache core shell assets without forcing immediate skipWaiting

@@ -12,7 +12,7 @@
     <!-- Cabeçalhos de Segurança (Client-Side Meta Tags) -->
     <meta http-equiv="X-Content-Type-Options" content="nosniff">
     <meta name="referrer" content="strict-origin-when-cross-origin">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://*.supabase.co wss://*.supabase.co blob: data:; object-src 'none'; base-uri 'self';">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://*.supabase.co wss://*.supabase.co blob: data:; object-src 'none'; base-uri 'self';">
     
     <!-- Configurações para Web App Nativo / PWA -->
     <meta name="mobile-web-app-capable" content="yes">
@@ -23,6 +23,7 @@
     
     <link rel="manifest" href="/manifest.json">
     <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon.png">
     <link rel="icon" type="image/png" sizes="64x64" href="/icons/neon-favicon.png">
     <link rel="icon" type="image/png" sizes="192x192" href="/icons/neon-logo-192.png">
     <link rel="icon" type="image/png" sizes="512x512" href="/icons/neon-logo-512.png">
@@ -31,7 +32,6 @@
     <link rel="apple-touch-icon" sizes="192x192" href="/icons/neon-logo-192.png">
     <link rel="apple-touch-icon" sizes="512x512" href="/icons/neon-logo-512.png">
 
-    <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
@@ -88,27 +88,9 @@
             }
         }
     </style>
-
-    <script>
-      window.__vite_plugin_react_preamble_installed__ = true;
-    </script>
 </head>
 <body>
     <div id="root"></div>
     <script type="module" src="/index.tsx"></script>
-    <script>
-      // Service worker registration for PWA installability
-      if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js', { scope: '/' })
-            .then((registration) => {
-              console.log('PrintFlow ServiceWorker registrado com sucesso:', registration.scope);
-            })
-            .catch((error) => {
-              console.warn('Falha ao registrar ServiceWorker:', error);
-            });
-        });
-      }
-    </script>
 </body>
 </html>

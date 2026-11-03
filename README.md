@@ -237,12 +237,43 @@ CREATE TABLE IF NOT EXISTS public.customers (
     notes text,
     "createdAt" timestamptz DEFAULT now()
 );
+
+-- 8. TABELA DE FALHAS & SUCATA DE IMPRESSÃO
+CREATE TABLE IF NOT EXISTS public.failures (
+    id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id uuid REFERENCES auth.users(id),
+    printer_id uuid REFERENCES public.printers(id),
+    printer_name text DEFAULT 'Impressora',
+    reason text NOT NULL DEFAULT 'Outro',
+    filament_id uuid REFERENCES public.filaments(id),
+    filament_name text,
+    grams_lost numeric DEFAULT 0,
+    print_time_hours_lost numeric DEFAULT 0,
+    cost_lost numeric DEFAULT 0,
+    failure_date date DEFAULT CURRENT_DATE,
+    notes text,
+    created_at timestamptz DEFAULT now()
+);
+
+-- 9. TABELA DE DESPESAS OPERACIONAIS (FLUXO DE CAIXA)
+CREATE TABLE IF NOT EXISTS public.cash_expenses (
+    id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id uuid REFERENCES auth.users(id),
+    description text NOT NULL,
+    amount numeric NOT NULL DEFAULT 0,
+    category text NOT NULL DEFAULT 'outros',
+    expense_date date DEFAULT CURRENT_DATE,
+    notes text,
+    created_at timestamptz DEFAULT now()
+);
 ```
 
-### Configuração de Fotos (Supabase Storage)
-Para habilitar o upload de imagens das peças do catálogo:
-1. No painel do seu projeto Supabase, acesse **Storage**.
-2. Crie um novo bucket público chamado **`PARTS-IMAGES`** (marcando a opção *Public bucket*).
+### 📁 Configuração do Supabase Storage (`PARTS-IMAGES`)
+O sistema utiliza um único bucket chamado **`PARTS-IMAGES`** para fotos do catálogo, logos da oficina e PDFs de orçamentos:
+1. No painel do seu projeto Supabase, acesse **Storage** e crie o bucket **`PARTS-IMAGES`**.
+2. **Políticas de Acesso Seguras:**
+   - **Upload, Edição e Exclusão (INSERT/UPDATE/DELETE):** Ficam estritamente restritas por pasta ao usuário proprietário (`{user_id}/*`, `logos/{user_id}/*` e `quotes/{order_id}/*`), impedindo que qualquer usuário manipule ou sobrescreva arquivos alheios.
+   - **Leitura (SELECT):** Mantida acessível para que os links de orçamentos em PDF e imagens compartilhados no WhatsApp e propostas comerciais sejam abertos diretamente pelos clientes sem exigir login no Supabase.
 
 ---
 
@@ -265,22 +296,74 @@ Para habilitar o upload de imagens das peças do catálogo:
    cd printflow
    ```
 
-2. Instale as dependências:
+2. Configure as variáveis de ambiente:
+   Copie o arquivo de exemplo e preencha com suas credenciais públicas do Supabase:
+   ```bash
+   cp .env.example .env
+   ```
+   Edite o `.env` com as informações do seu projeto Supabase:
+   ```env
+   VITE_SUPABASE_URL=https://seu-projeto.supabase.co
+   VITE_SUPABASE_ANON_KEY=sua-chave-anon-publica
+   ```
+
+   > **Onde configurar as variáveis de ambiente:**
+   > - **Local / Desenvolvimento:** No arquivo `.env` na raiz do projeto (já ignorado pelo `.gitignore`).
+   > - **Vercel:** Acesse o painel do seu projeto na Vercel > **Settings** > **Environment Variables** e adicione `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY`.
+   > - **Google AI Studio / Cloud Run:** No arquivo `.env` ou nas configurações de variáveis de ambiente da plataforma.
+   > - ⚠️ **Atenção:** Nunca utilize nem publique a chave `service_role`. Use sempre a chave pública `anon`.
+
+3. Instale as dependências:
    ```bash
    npm install
    ```
 
-3. Inicie o servidor de desenvolvimento:
+4. Inicie o servidor de desenvolvimento:
    ```bash
    npm run dev
    ```
 
-4. Acesse no navegador:
+5. Acesse no navegador:
    ```
    http://localhost:3000
    ```
 
-5. Para gerar o build de produção:
+6. Para gerar o build de produção:
    ```bash
    npm run build
    ```
+
+---
+
+## 🛡️ Segurança
+
+O PrintFlow 3D segue práticas rigorosas de segurança defensiva em camadas:
+
+- **Row Level Security (RLS) Ativo em Todas as Tabelas:**
+  - As 9 tabelas do sistema (`filaments`, `printers`, `supplies`, `parts`, `orders`, `customers`, `cash_expenses`, `failures`, `settings`) operam com RLS ativado e forçado via script `supabase/security.sql`.
+  - Cada oficina visualiza, insere, altera e exclui exclusivamente os registros com `user_id = (SELECT auth.uid())`, tanto no filtro de leitura (`USING`) quanto na validação de integridade (`WITH CHECK`).
+- **Chave `service_role` Nunca no Código:**
+  - O aplicativo utiliza unicamente a chave pública `anon` (`VITE_SUPABASE_ANON_KEY`), garantindo que nenhuma permissão de superusuário ou bypass de RLS exista no navegador.
+  - A chave mestra `service_role` jamais deve ser exposta ou inserida no projeto.
+- **Cadastros e Confirmação de E-mail (Painel Supabase):**
+  - **Uso Exclusivo / Oficina Própria:** Desative a opção *"Allow new users to sign up"* em **Authentication > Providers > Email** no painel do Supabase para que somente o administrador possa criar novos operadores em **Authentication > Users**.
+  - **Uso Público:** Caso permita cadastros abertos, mantenha *"Confirm email"* ativado para prevenir contas fraudulentas ou com e-mails temporários.
+- **Proteção de Autenticação e Senhas:**
+  - Integração com *HaveIBeenPwned* para bloqueio de senhas já vazadas na internet.
+  - *Rate Limiting* ativo contra ataques de força bruta no login.
+  - *Refresh Token Rotation* ativado para proteção contra interceptação de sessões.
+
+---
+
+## 🔒 Cabeçalhos HTTP de Segurança (vercel.json)
+
+Os cabeçalhos de segurança estão centralizados exclusivamente em `vercel.json`:
+- **Strict-Transport-Security (HSTS):** Força HTTPS estrito (`max-age=31536000; includeSubDomains`).
+- **Content-Security-Policy (CSP):** Sem CDN externo e sem `'unsafe-eval'`. O Tailwind CSS é compilado nativamente no build.
+- **X-Frame-Options & frame-ancestors:**
+  > ⚠️ **Atenção para Produção Standalone:** No arquivo `vercel.json`, a diretiva `frame-ancestors` inclui temporariamente `'self' https://*.google.com https://*.run.app` para permitir a pré-visualização embutida no ambiente de desenvolvimento do Google AI Studio. Quando for publicar a aplicação em seu domínio de produção exclusivo (sem uso de iframes externos), edite `vercel.json` e altere a diretiva para apenas:
+  > ```http
+  > frame-ancestors 'self';
+  > ```
+
+
