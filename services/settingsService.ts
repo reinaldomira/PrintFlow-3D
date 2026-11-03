@@ -167,6 +167,7 @@ export function embedCarrierInCategories(categories: string[] | undefined, setti
     defaultMarketplaceFeePercent: settings.defaultMarketplaceFeePercent,
     defaultTaxPercent: settings.defaultTaxPercent,
     autoRefreshOrders: settings.autoRefreshOrders,
+    filamentBrands: settings.filamentBrands || [],
     updatedAt: new Date().toISOString()
   };
 
@@ -302,6 +303,14 @@ export function rowToSettings(
         ? extData.autoRefreshOrders
         : (fallbackSettings.autoRefreshOrders ?? true)));
 
+  const carrierBrands = Array.isArray(extData?.filamentBrands) && extData.filamentBrands.length > 0
+    ? extData.filamentBrands
+    : null;
+  const dbBrands = Array.isArray(row.filament_brands) && row.filament_brands.length > 0
+    ? row.filament_brands
+    : (Array.isArray(row.filamentBrands) && row.filamentBrands.length > 0 ? row.filamentBrands : null);
+  const resolvedBrands = dbBrands || carrierBrands || fallbackSettings.filamentBrands || DEFAULT_SETTINGS.filamentBrands;
+
   return {
     defaultEnergyCost: Number(row.default_energy_cost ?? row.defaultEnergyCost ?? fallbackSettings.defaultEnergyCost ?? DEFAULT_SETTINGS.defaultEnergyCost),
     defaultFilamentCost: Number(row.default_filament_cost ?? row.defaultFilamentCost ?? fallbackSettings.defaultFilamentCost ?? DEFAULT_SETTINGS.defaultFilamentCost),
@@ -309,7 +318,7 @@ export function rowToSettings(
     hourlyLaborRate,
     hourlyMaintenanceCost,
     currency: String(row.currency || fallbackSettings.currency || DEFAULT_SETTINGS.currency),
-    filamentBrands: Array.isArray(row.filament_brands) ? row.filament_brands : (Array.isArray(row.filamentBrands) ? row.filamentBrands : (fallbackSettings.filamentBrands || DEFAULT_SETTINGS.filamentBrands)),
+    filamentBrands: resolvedBrands,
     categories: cleanCategories.length > 0 ? cleanCategories : (fallbackSettings.categories || DEFAULT_SETTINGS.categories),
     businessInfo: resolvedBusiness,
     defaultPackagingCost,
@@ -545,8 +554,8 @@ export async function saveRemoteSettings(
         if (currentRemote?.updated_at) {
           const remoteTime = new Date(currentRemote.updated_at).getTime();
           const localTime = new Date(settings.updatedAt).getTime();
-          // Mais de 2 segundos de diferença indica gravação posterior feita em outro dispositivo
-          if (remoteTime > localTime + 2000) {
+          // Mais de 15 segundos de diferença indica gravação real feita em outro dispositivo
+          if (!isNaN(remoteTime) && !isNaN(localTime) && remoteTime > localTime + 15000) {
             return {
               success: false,
               cloudSyncedFull: false,
@@ -569,11 +578,13 @@ export async function saveRemoteSettings(
 
     if (!fullError) {
       // Atualiza timestamp local com o timestamp recém gravado
-      settings.updatedAt = fullRow.updated_at || new Date().toISOString();
+      const newTimestamp = fullRow.updated_at || new Date().toISOString();
+      settings.updatedAt = newTimestamp;
       return {
         success: true,
         cloudSyncedFull: true,
         requiresMigration: false,
+        remoteUpdatedAt: newTimestamp,
         error: null
       };
     }
@@ -593,20 +604,49 @@ export async function saveRemoteSettings(
         .upsert(baseRow);
 
       if (baseError) {
+        console.warn('Erro ao gravar baseRow no Supabase, tentando minimalRow com carrier...', baseError.message);
+        // Se a coluna filament_brands também não existir no banco do usuário,
+        // o carrier embutido em categories salva marcas, dados comerciais e custos com resiliência total
+        const minimalRow = {
+          user_id: userId,
+          default_energy_cost: settings.defaultEnergyCost,
+          default_filament_cost: settings.defaultFilamentCost,
+          default_profit_margin: settings.defaultProfitMargin,
+          currency: settings.currency || 'R$',
+          categories: fullRow.categories
+        };
+        const { error: minError } = await supabase
+          .from('settings')
+          .upsert(minimalRow);
+
+        if (minError) {
+          return {
+            success: false,
+            cloudSyncedFull: false,
+            requiresMigration: true,
+            error: sanitizeErrorMessage(baseError.message)
+          };
+        }
+
+        const nowTs = new Date().toISOString();
+        settings.updatedAt = nowTs;
         return {
-          success: false,
-          cloudSyncedFull: false,
-          requiresMigration: true,
-          error: sanitizeErrorMessage(baseError.message)
+          success: true,
+          cloudSyncedFull: true,
+          requiresMigration: false,
+          remoteUpdatedAt: nowTs,
+          error: null
         };
       }
 
       // O carrier embutido em categories salvou com sucesso todos os dados comerciais e configurações estendidas na nuvem
-      settings.updatedAt = new Date().toISOString();
+      const nowTs = new Date().toISOString();
+      settings.updatedAt = nowTs;
       return {
         success: true,
         cloudSyncedFull: true,
         requiresMigration: false,
+        remoteUpdatedAt: nowTs,
         error: null
       };
     }

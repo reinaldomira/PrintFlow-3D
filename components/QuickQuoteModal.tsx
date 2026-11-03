@@ -194,7 +194,6 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({ isOpen, onClos
     const companyName = biz.companyName || 'Impressão 3D';
     const greeting = customerName.trim() ? `Olá ${customerName.trim()}!` : 'Olá!';
     const materialLabel = activeFilament ? `${activeFilament.material} (${activeFilament.colorName || 'Cor Padrão'})` : 'PLA Premium';
-    const pixText = biz.pixKey ? `\n🔑 *Chave Pix:* ${biz.pixKey} (${biz.pixReceiverName || companyName})` : '';
 
     const lines = [
       `*${companyName.toUpperCase()} - ORÇAMENTO 3D* ⚡`,
@@ -209,7 +208,7 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({ isOpen, onClos
       `📦 *Prazo de Produção:* ${deadlineDays}`,
       ``,
       `💰 *VALOR TOTAL:* ${formatCurrency(quoteCalculation.finalSalePrice)}${quoteCalculation.qty > 1 ? ` (${formatCurrency(quoteCalculation.unitSalePrice)} cada)` : ''}`,
-      `💳 *Forma de Pagamento:* ${paymentType === 'pix' ? 'Pix à vista (Sem taxas)' : paymentType === 'card' ? 'Cartão de Crédito/Débito' : 'Link de Pagamento / Marketplace'}${paymentType === 'pix' ? pixText : ''}`,
+      `📄 *Condição:* Orçamento comercial informativo sujeito à sua aprovação (sem cobrança imediata).`,
       ``,
       `✅ *Incluso:* Fabricação aditiva de alta precisão, conferência dimensional${includePackaging ? ' e embalagem protetora' : ''}.`,
       ``,
@@ -219,7 +218,7 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({ isOpen, onClos
     return lines.join('\n');
   }, [
     settings.businessInfo, customerName, partName, quoteCalculation,
-    activeFilament, totalPrintHours, deadlineDays, paymentType, includePackaging
+    activeFilament, totalPrintHours, deadlineDays, includePackaging
   ]);
 
   const handleCopyWhatsAppText = async () => {
@@ -392,11 +391,12 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({ isOpen, onClos
 
               <div className="grid grid-cols-2 sm:grid-cols-12 gap-2.5 sm:gap-3">
                 {/* Peso em Gramas */}
+                {/* Peso em Gramas */}
                 <div className="col-span-1 sm:col-span-3 sm:order-1">
                   <label className="text-[11px] font-bold text-zinc-400 block mb-1 truncate">
                     Peso Unitário:
                   </label>
-                  <div className="flex items-center bg-zinc-900 border border-zinc-700 rounded-xl px-2.5 py-1 focus-within:border-emerald-500 transition-colors">
+                  <div className="h-11 flex items-center bg-zinc-900 border border-zinc-700 rounded-xl px-3 focus-within:border-emerald-500 transition-colors">
                     <input 
                       type="number" 
                       step="1"
@@ -404,7 +404,7 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({ isOpen, onClos
                       value={weightGrams}
                       onChange={e => setWeightGrams(e.target.value === '' ? '' : Math.max(0, Number(e.target.value)))}
                       placeholder="85"
-                      className="w-full bg-transparent py-1.5 text-sm font-bold text-white outline-none min-w-0 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      className="h-full w-full bg-transparent text-sm font-bold text-white outline-none min-w-0 leading-normal [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                     />
                     <span className="text-zinc-500 font-bold text-xs pl-1 select-none pointer-events-none">g</span>
                   </div>
@@ -415,13 +415,13 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({ isOpen, onClos
                   <label className="text-[11px] font-bold text-zinc-400 block mb-1 truncate">
                     Quantidade:
                   </label>
-                  <div className="flex items-center bg-zinc-900 border border-zinc-700 rounded-xl px-2.5 py-1 focus-within:border-emerald-500 transition-colors">
+                  <div className="h-11 flex items-center bg-zinc-900 border border-zinc-700 rounded-xl px-2.5 focus-within:border-emerald-500 transition-colors">
                     <input 
                       type="number"
                       min="1"
                       value={quantity}
                       onChange={e => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
-                      className="w-full bg-transparent py-1.5 text-sm font-bold text-white outline-none min-w-0 text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      className="h-full w-full bg-transparent text-sm font-bold text-white outline-none min-w-0 text-center leading-normal [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                     />
                     <span className="text-zinc-500 text-[10px] font-bold pl-1 select-none pointer-events-none">un</span>
                   </div>
@@ -434,20 +434,20 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({ isOpen, onClos
                   </label>
                   <div className="flex items-center gap-1.5">
                     {/* Horas */}
-                    <div className="flex-1 flex items-center bg-zinc-900 border border-zinc-700 rounded-xl px-2.5 py-1 focus-within:border-emerald-500 transition-colors min-w-0">
+                    <div className="flex-1 h-11 flex items-center bg-zinc-900 border border-zinc-700 rounded-xl px-2.5 focus-within:border-emerald-500 transition-colors min-w-0">
                       <input 
                         type="number"
                         min="0"
                         value={printHours}
                         onChange={e => setPrintHours(e.target.value === '' ? '' : Math.max(0, Number(e.target.value)))}
                         placeholder="0"
-                        className="w-full bg-transparent py-1.5 text-sm font-bold text-white outline-none min-w-0 text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                        className="h-full w-full bg-transparent text-sm font-bold text-white outline-none min-w-0 text-center leading-normal [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                       />
                       <span className="text-zinc-500 text-xs font-bold pl-1 select-none pointer-events-none">h</span>
                     </div>
 
                     {/* Minutos */}
-                    <div className="flex-1 flex items-center bg-zinc-900 border border-zinc-700 rounded-xl px-2.5 py-1 focus-within:border-emerald-500 transition-colors min-w-0">
+                    <div className="flex-1 h-11 flex items-center bg-zinc-900 border border-zinc-700 rounded-xl px-2.5 focus-within:border-emerald-500 transition-colors min-w-0">
                       <input 
                         type="number"
                         min="0"
@@ -455,7 +455,7 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({ isOpen, onClos
                         value={printMinutes}
                         onChange={e => setPrintMinutes(e.target.value === '' ? '' : Math.max(0, Math.min(59, Number(e.target.value))))}
                         placeholder="0"
-                        className="w-full bg-transparent py-1.5 text-sm font-bold text-white outline-none min-w-0 text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                        className="h-full w-full bg-transparent text-sm font-bold text-white outline-none min-w-0 text-center leading-normal [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                       />
                       <span className="text-zinc-500 text-xs font-bold pl-1 select-none pointer-events-none">m</span>
                     </div>
@@ -467,14 +467,14 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({ isOpen, onClos
                   <label className="text-[11px] font-bold text-zinc-400 block mb-1 truncate" title="Tempo humano gasto em pós-cura, acabamento ou montagem">
                     Pós-cura/Acabam.:
                   </label>
-                  <div className="flex items-center bg-zinc-900 border border-zinc-700 rounded-xl px-2.5 py-1 focus-within:border-emerald-500 transition-colors">
+                  <div className="h-11 flex items-center bg-zinc-900 border border-zinc-700 rounded-xl px-2.5 focus-within:border-emerald-500 transition-colors">
                     <input 
                       type="number"
                       min="0"
                       value={finishingMinutes}
                       onChange={e => setFinishingMinutes(e.target.value === '' ? '' : Math.max(0, Number(e.target.value)))}
                       placeholder="0"
-                      className="w-full bg-transparent py-1.5 text-sm font-bold text-white outline-none min-w-0 text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      className="h-full w-full bg-transparent text-sm font-bold text-white outline-none min-w-0 text-center leading-normal [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                     />
                     <span className="text-zinc-500 text-[10px] font-bold pl-1 select-none pointer-events-none">min</span>
                   </div>

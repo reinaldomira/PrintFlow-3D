@@ -865,15 +865,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     newSettings: Settings, 
     options?: { force?: boolean; expectedVersion?: number }
   ): Promise<boolean> => {
+    // 1. Atualização otimista imediata na interface (0ms de atraso percebido)
+    setSettingsState(newSettings);
     setSettingsSyncState('saving');
 
-    // 1. Armazenamento local imediato (como cache/offline fallback isolado por usuário)
+    // 2. Armazenamento local imediato (como cache/offline fallback isolado por usuário)
     if (user) {
       saveLocalSettings(user.id, newSettings, true);
     }
 
     if (!user) {
-      setSettingsState(newSettings);
       setSettingsSyncState('pending_local');
       return true;
     }
@@ -895,14 +896,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setSettingsConflict(null);
 
       if (result.success) {
-        setSettingsState(newSettings);
+        const syncedSettings: Settings = {
+          ...newSettings,
+          updatedAt: result.remoteUpdatedAt || newSettings.updatedAt || new Date().toISOString(),
+          version: typeof result.newVersion === 'number' ? result.newVersion : newSettings.version
+        };
+        setSettingsState(syncedSettings);
         if (result.cloudSyncedFull) {
-          saveLocalSettings(user.id, newSettings, false);
+          saveLocalSettings(user.id, syncedSettings, false);
           setSettingsSyncState('synced');
           setDbError(prev => (prev && (prev.includes('settings') || prev.includes('Configurações') || prev.includes('Conflito')) ? null : prev));
           return true;
         } else if (result.requiresMigration) {
-          saveLocalSettings(user.id, newSettings, true);
+          saveLocalSettings(user.id, syncedSettings, true);
           setSettingsSyncState('pending_local');
           setDbError('Custos básicos salvos no Supabase. Para sincronizar Dados Comerciais e Custos Horários entre computador e celular, execute o script SQL na aba Ajustes.');
           return true;

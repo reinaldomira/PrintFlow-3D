@@ -287,8 +287,43 @@ export const Dashboard: React.FC = () => {
     return Number((materialCost + energyCost + maintenanceCost).toFixed(2));
   }, [failGrams, failHours, failFilament, failPrinter, filaments, printers, settings]);
 
-  const handlePrevMonth = () => setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() - 1, 1));
-  const handleNextMonth = () => setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 1));
+  // Encontra o mês mais recente com movimentações ou pedidos cadastrados no sistema
+  const latestMonthWithOrders = useMemo(() => {
+    if (!orders || orders.length === 0) return null;
+    const sorted = [...orders]
+      .filter(o => o && o.createdAt)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    if (sorted.length === 0) return null;
+    const d = new Date(sorted[0].createdAt);
+    if (isNaN(d.getTime())) return null;
+    return new Date(d.getFullYear(), d.getMonth(), 1);
+  }, [orders]);
+
+  // Se o mês vigente (ex: Novembro) ainda não possui pedidos cadastrados,
+  // mas existem pedidos em meses anteriores (ex: Outubro), e o usuário não navegou manualmente,
+  // inicializa diretamente no mês mais recente com dados para evitar o susto da virada de mês zerada.
+  useEffect(() => {
+    const hasUserChosen = sessionStorage.getItem('printflow_dashboard_user_navigated');
+    if (!hasUserChosen && latestMonthWithOrders) {
+      const now = new Date();
+      const currentMonthOrders = orders.filter(o => {
+        const d = new Date(o.createdAt);
+        return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+      });
+      if (currentMonthOrders.length === 0) {
+        setViewDate(latestMonthWithOrders);
+      }
+    }
+  }, [orders, latestMonthWithOrders]);
+
+  const handlePrevMonth = () => {
+    sessionStorage.setItem('printflow_dashboard_user_navigated', 'true');
+    setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() - 1, 1));
+  };
+  const handleNextMonth = () => {
+    sessionStorage.setItem('printflow_dashboard_user_navigated', 'true');
+    setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 1));
+  };
 
   const isCurrentMonth = useMemo(() => {
     const now = new Date();
@@ -296,6 +331,7 @@ export const Dashboard: React.FC = () => {
   }, [viewDate]);
 
   const handleCurrentMonth = () => {
+    sessionStorage.setItem('printflow_dashboard_user_navigated', 'true');
     const now = new Date();
     setViewDate(new Date(now.getFullYear(), now.getMonth(), 1));
   };
@@ -334,6 +370,7 @@ export const Dashboard: React.FC = () => {
     filteredOrders.forEach(order => {
       const normStatus = normalizeOrderStatus(order.status);
       if (normStatus === OrderStatus.CANCELLED) return; // Pedidos cancelados nunca entram em faturamento
+      if (normStatus === OrderStatus.PENDING) return; // Orçamentos pendentes são estritamente informativos e não geram faturamento nem cobrança pendente
 
       const isPaid = isOrderPaid(order);
       const val = Number(order.totalValue) || 0;
@@ -2035,6 +2072,39 @@ export const Dashboard: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Alerta inteligente de virada de mês / Mês sem pedidos quando há pedidos em outro mês */}
+      {filteredOrders.length === 0 && latestMonthWithOrders && (viewDate.getMonth() !== latestMonthWithOrders.getMonth() || viewDate.getFullYear() !== latestMonthWithOrders.getFullYear()) && (
+        <div className="bg-gradient-to-r from-blue-950/70 via-slate-900/90 to-blue-950/70 border border-blue-500/40 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-blue-200 shadow-xl shadow-black/40 animate-in fade-in duration-300">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-blue-500/20 text-blue-400 border border-blue-500/30 flex items-center justify-center shrink-0">
+              <Calendar className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="font-bold text-white text-sm flex items-center gap-2 flex-wrap">
+                <span>Período Selecionado: {monthLabel}</span>
+                <span className="text-[10px] bg-blue-500/20 text-blue-300 px-2.5 py-0.5 rounded-full border border-blue-500/30 font-semibold">
+                  0 pedidos neste mês
+                </span>
+              </p>
+              <p className="text-blue-300/80 text-xs mt-0.5">
+                O mês virou no calendário (1º de novembro). Seus pedidos, faturamento e lucros continuam 100% salvos e seguros no mês de <strong className="text-white capitalize">{latestMonthWithOrders.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}</strong>.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setViewDate(latestMonthWithOrders);
+              sessionStorage.setItem('printflow_dashboard_user_navigated', 'true');
+            }}
+            className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl text-xs flex items-center gap-2 transition shrink-0 cursor-pointer shadow-md active:scale-95"
+          >
+            <span>Ver {latestMonthWithOrders.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Dynamic Cards Grid rendered according to cardsConfig order & visibility */}
       <div className="space-y-6">

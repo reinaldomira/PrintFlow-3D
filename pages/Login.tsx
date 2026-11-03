@@ -54,6 +54,12 @@ const Login: React.FC = () => {
     if (msg.includes('rate limit')) {
       return 'Muitas tentativas em pouco tempo. Aguarde alguns instantes e tente novamente.';
     }
+    if (msg.includes('pwned') || msg.includes('leaked') || msg.includes('compromised') || msg.includes('comprometida')) {
+      return 'Esta senha foi encontrada em vazamentos conhecidos na internet (HaveIBeenPwned). Para sua proteção, escolha uma senha mais forte e exclusiva.';
+    }
+    if (msg.includes('signup') && (msg.includes('disabled') || msg.includes('not allowed') || msg.includes('closed'))) {
+      return 'Novos cadastros públicos estão desativados. Solicite o convite ou acesso ao administrador da oficina.';
+    }
     if (msg.includes('invalid email') || msg.includes('unable to validate email')) {
       return 'Por favor, informe um endereço de e-mail válido.';
     }

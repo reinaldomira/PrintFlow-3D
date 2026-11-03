@@ -12,12 +12,13 @@ import {
   QrCode, MessageCircle, Printer as PrinterIcon, Edit2, CheckCircle2, UserPlus, 
   Wrench, AlertCircle, FileText, Calculator, TrendingUp, SlidersHorizontal, 
   AlertTriangle, Percent, DollarSign, Clock, ShieldAlert, Sparkles, Check, RotateCcw, Zap,
-  PackageCheck, Layers
+  PackageCheck, Layers, Info, Copy
 } from 'lucide-react';
 import { QuotePdfModal } from '../components/QuotePdfModal';
 import { PricingCalculatorModal } from '../components/PricingCalculatorModal';
 import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 import { QuickQuoteModal } from '../components/QuickQuoteModal';
+import { getQuotePdfBlob, getRealisticOrderNumber, uploadQuotePdfToStorage } from '../services/quotePdfGenerator';
 
 export interface StockPreviewRow {
   id: string; // filamentId ou supplyId
@@ -218,6 +219,7 @@ export const Orders: React.FC = () => {
 
   // Printable Receipt Modal
   const [receiptOrder, setReceiptOrder] = useState<Order | null>(null);
+  const [copiedReceiptPix, setCopiedReceiptPix] = useState(false);
   // Quote PDF Modal
   const [quoteModalOrder, setQuoteModalOrder] = useState<Order | null>(null);
 
@@ -658,7 +660,7 @@ export const Orders: React.FC = () => {
       }
 
       const { error } = orderIdToUpdate
-        ? await supabase.from('orders').update(orderPayload).eq('id', orderIdToUpdate)
+        ? await supabase.from('orders').update(orderPayload).eq('id', orderIdToUpdate).eq('user_id', user.id)
         : await supabase.from('orders').insert([orderPayload]);
 
       if (error) {
@@ -717,8 +719,10 @@ export const Orders: React.FC = () => {
       unitPrice: Math.max(0, Number(item.unitPrice) || 0)
     }));
 
-    const chosenMethod = orderForm.paymentMethod || PaymentMethod.PIX;
-    const isPaid = Boolean(orderForm.isPaid);
+    const isQuoteStatus = normalizeOrderStatus(orderForm.status) === OrderStatus.PENDING;
+    const chosenMethod = isQuoteStatus ? (orderForm.paymentMethod || 'A combinar') : (orderForm.paymentMethod || PaymentMethod.PIX);
+    // Para orçamentos pendentes, nunca registra recebimento em caixa nem transação financeira
+    const isPaid = isQuoteStatus ? false : Boolean(orderForm.isPaid);
     const paymentStatus = isPaid ? 'PAID' : 'PENDING';
 
     const basePayload: any = {
@@ -755,6 +759,12 @@ export const Orders: React.FC = () => {
         method: chosenMethod
       }] : []
     };
+
+    // Orçamento Comercial (Aguardando Aprovação): exclusivamente informativo, não baixa estoque nem gera transação financeira
+    if (isQuoteStatus) {
+      await executeOrderSave(fullPayload, basePayload, editingOrderId || null, {}, 'none', {});
+      return;
+    }
 
     // Calcula o consumo de filamento e de insumos necessário para este pedido
     const calculatedConsumption = calculateOrderFilamentConsumption(sanitizedItems, parts, filaments);
@@ -992,6 +1002,7 @@ export const Orders: React.FC = () => {
                 .from('supplies')
                 .select('quantity, name')
                 .eq('id', supplyId)
+                .eq('user_id', user.id)
                 .single();
 
               if (fetchErr || !freshSupply) {
@@ -1009,7 +1020,8 @@ export const Orders: React.FC = () => {
               const { error: updErr } = await supabase
                 .from('supplies')
                 .update({ quantity: newQuantity, updated_at: new Date().toISOString() })
-                .eq('id', supplyId);
+                .eq('id', supplyId)
+                .eq('user_id', user.id);
 
               if (updErr) {
                 throw new Error(`Falha ao debitar insumo ${row.name} no Supabase: ${updErr.message}`);
@@ -1024,6 +1036,7 @@ export const Orders: React.FC = () => {
                 .from('filaments')
                 .select('remainingWeight, weight, brand, material')
                 .eq('id', filamentId)
+                .eq('user_id', user.id)
                 .single();
 
               if (fetchErr || !freshFil) {
@@ -1041,7 +1054,8 @@ export const Orders: React.FC = () => {
               const { error: updErr } = await supabase
                 .from('filaments')
                 .update({ remainingWeight: newWeight })
-                .eq('id', filamentId);
+                .eq('id', filamentId)
+                .eq('user_id', user.id);
 
               if (updErr) {
                 throw new Error(`Falha ao debitar carretel ${row.name} no Supabase: ${updErr.message}`);
@@ -1113,6 +1127,7 @@ export const Orders: React.FC = () => {
                 .from('supplies')
                 .select('quantity, name')
                 .eq('id', supplyId)
+                .eq('user_id', user.id)
                 .single();
 
               if (fetchErr || !freshSupply) {
@@ -1141,7 +1156,8 @@ export const Orders: React.FC = () => {
                 const { error: updErr } = await supabase
                   .from('supplies')
                   .update({ quantity: newQuantity, updated_at: new Date().toISOString() })
-                  .eq('id', supplyId);
+                  .eq('id', supplyId)
+                  .eq('user_id', user.id);
 
                 if (updErr) {
                   throw new Error(`Erro ao atualizar estoque do insumo ${row.name}: ${updErr.message}`);
@@ -1154,6 +1170,7 @@ export const Orders: React.FC = () => {
                 .from('filaments')
                 .select('remainingWeight, weight, brand, material')
                 .eq('id', filamentId)
+                .eq('user_id', user.id)
                 .single();
 
               if (fetchErr || !freshFil) {
@@ -1182,7 +1199,8 @@ export const Orders: React.FC = () => {
                 const { error: updErr } = await supabase
                   .from('filaments')
                   .update({ remainingWeight: newWeight })
-                  .eq('id', filamentId);
+                  .eq('id', filamentId)
+                  .eq('user_id', user.id);
 
                 if (updErr) {
                   throw new Error(`Erro ao atualizar estoque do carretel ${row.name}: ${updErr.message}`);
@@ -1242,6 +1260,7 @@ export const Orders: React.FC = () => {
                   .from('supplies')
                   .select('quantity, name')
                   .eq('id', supplyId)
+                  .eq('user_id', user.id)
                   .single();
 
                 const currentQty = Number(freshSupply?.quantity) || 0;
@@ -1250,7 +1269,8 @@ export const Orders: React.FC = () => {
                 const { error: updErr } = await supabase
                   .from('supplies')
                   .update({ quantity: newQty, updated_at: new Date().toISOString() })
-                  .eq('id', supplyId);
+                  .eq('id', supplyId)
+                  .eq('user_id', user.id);
 
                 if (updErr) {
                   throw new Error(`Não foi possível devolver o insumo ${row.name}: ${updErr.message}`);
@@ -1268,6 +1288,7 @@ export const Orders: React.FC = () => {
                   .from('filaments')
                   .select('remainingWeight, weight, brand, material')
                   .eq('id', filamentId)
+                  .eq('user_id', user.id)
                   .single();
 
                 const currentWeight = Number(freshFil?.remainingWeight ?? freshFil?.weight ?? 1000);
@@ -1276,7 +1297,8 @@ export const Orders: React.FC = () => {
                 const { error: updErr } = await supabase
                   .from('filaments')
                   .update({ remainingWeight: newWeight })
-                  .eq('id', filamentId);
+                  .eq('id', filamentId)
+                  .eq('user_id', user.id);
 
                 if (updErr) {
                   throw new Error(`Não foi possível devolver o material ao carretel ${row.name}: ${updErr.message}`);
@@ -1312,7 +1334,8 @@ export const Orders: React.FC = () => {
         const { error: cancelError } = await supabase
           .from('orders')
           .update(updateData)
-          .eq('id', orderToCancel.id);
+          .eq('id', orderToCancel.id)
+          .eq('user_id', user.id);
 
         if (cancelError) {
           throw new Error(cancelError.message || 'Falha ao atualizar status para cancelado.');
@@ -1504,7 +1527,21 @@ export const Orders: React.FC = () => {
   };
 
   const updateStatus = async (id: string, status: OrderStatus) => {
-    await supabase.from('orders').update({ status }).eq('id', id);
+    if (!user) return;
+    const prevOrder = orders.find(o => o.id === id);
+    const wasPending = prevOrder && normalizeOrderStatus(prevOrder.status) === OrderStatus.PENDING;
+    const isNowApproved = normalizeOrderStatus(status) !== OrderStatus.PENDING && status !== OrderStatus.CANCELLED;
+
+    await supabase.from('orders').update({ status }).eq('id', id).eq('user_id', user.id);
+
+    if (wasPending && isNowApproved) {
+      setPageNotice({
+        type: 'success',
+        message: `Pedido #${id.slice(0, 5).toUpperCase()} aprovado com sucesso! Os dados e QR Code Pix agora estão ativos no PDF e no WhatsApp.`
+      });
+      setTimeout(() => setPageNotice(null), 5000);
+    }
+
     refreshData();
   };
 
@@ -1524,7 +1561,7 @@ export const Orders: React.FC = () => {
   };
 
   const confirmDeleteOrder = async () => {
-    if (!deleteOrderTarget) return;
+    if (!deleteOrderTarget || !user) return;
     setIsDeletingOrder(true);
     const idToDelete = deleteOrderTarget.id;
     const code = deleteOrderTarget.code;
@@ -1532,7 +1569,7 @@ export const Orders: React.FC = () => {
     try {
       // Atualização otimista imediata para feedback responsivo
       setOrders(orders.filter(o => o.id !== idToDelete));
-      const { error } = await supabase.from('orders').delete().eq('id', idToDelete);
+      const { error } = await supabase.from('orders').delete().eq('id', idToDelete).eq('user_id', user.id);
       if (error) throw error;
 
       setPageNotice({ type: 'success', message: `Pedido #${code} excluído com sucesso!` });
@@ -1548,36 +1585,164 @@ export const Orders: React.FC = () => {
     }
   };
 
-  const sendWhatsAppMessage = (order: Order) => {
+  const sendWhatsAppMessage = async (order: Order) => {
     const customer = customers.find(c => c.id === order.customerId);
     const phone = customer?.phone ? customer.phone.replace(/\D/g, '') : '';
-    
+    const isPendingQuote = normalizeOrderStatus(order.status) === OrderStatus.PENDING;
+    const orderNum = getRealisticOrderNumber(order);
+    const filename = `${!isPendingQuote ? 'Pedido' : 'Orcamento'}_${orderNum.replace('#', '')}.pdf`;
+
+    setPageNotice({
+      type: 'info',
+      message: `Preparando documento oficial em PDF e WhatsApp para ${customer?.name || 'Cliente'}...`
+    });
+
     const itemsText = (order.items || []).map(i => {
       const part = parts.find(p => p.id === i.partId);
       const name = i.name || part?.name || 'Peça 3D';
       return `• ${i.quantity}x ${name} - ${formatCurrency(i.unitPrice * i.quantity)}`;
     }).join('\n');
 
-    const msg = `*PRINTFLOW 3D - PEDIDO #${order.id.slice(0, 5).toUpperCase()}*\n\n` +
-      `Olá ${customer?.name || 'Cliente'}! Segue o resumo do seu pedido:\n\n` +
-      `${itemsText}\n\n` +
-      `Subtotal: ${formatCurrency((order.items || []).reduce((s, i) => s + (i.unitPrice * i.quantity), 0))}\n` +
-      (order.discount > 0 ? `Desconto: - ${formatCurrency(order.discount)}\n` : '') +
-      `*Total Final:* ${formatCurrency(order.totalValue)}\n` +
-      `*Forma de Pagamento:* ${order.paymentMethod || 'Pix'}\n` +
-      `*Status Atual:* ${order.status}\n\n` +
-      `Obrigado pela preferência! Qualquer dúvida estamos à disposição.`;
+    let pixPaymentText = '';
+    const isPix = !order.paymentMethod || order.paymentMethod === PaymentMethod.PIX;
+    if (!isPendingQuote && isPix && settings.businessInfo?.pixKey) {
+      pixPaymentText = `\n*DADOS PARA PAGAMENTO PIX:*\n` +
+        `🔑 Chave Pix: *${settings.businessInfo.pixKey}*` + (settings.businessInfo.pixKeyType ? ` (${settings.businessInfo.pixKeyType.toUpperCase()})` : '') + `\n` +
+        (settings.businessInfo.pixReceiverName ? `👤 Favorecido: ${settings.businessInfo.pixReceiverName}\n` : '') +
+        (settings.businessInfo.pixBank ? `🏦 Instituição/Banco: ${settings.businessInfo.pixBank}\n` : '') +
+        `💰 Valor: *${formatCurrency(order.totalValue)}*\n`;
+    }
 
-    const encoded = encodeURIComponent(msg);
-    if (phone && phone.length >= 10) {
-      window.open(`https://wa.me/55${phone}?text=${encoded}`, '_blank');
-    } else {
-      window.open(`https://wa.me/?text=${encoded}`, '_blank');
+    const titleHeader = isPendingQuote
+      ? `*PRINTFLOW 3D - ORÇAMENTO COMERCIAL #${orderNum}*`
+      : `*PRINTFLOW 3D - PEDIDO DE PRODUÇÃO #${orderNum}*`;
+
+    const conditionText = isPendingQuote
+      ? `*Condição:* Orçamento comercial informativo sujeito à aprovação (sem cobrança imediata).\n`
+      : `*Forma de Pagamento:* ${order.paymentMethod || 'Pix'}\n*Status do Pedido:* ${order.status}\n`;
+
+    try {
+      // 1. Gera o arquivo binário do PDF
+      const pdfBlob = await getQuotePdfBlob({
+        order,
+        customer,
+        parts,
+        filaments,
+        settings,
+        includePaymentInfo: !isPendingQuote
+      });
+
+      // 2. Faz o upload em nuvem para link direto de alta fidelidade
+      let onlineUrl: string | null = null;
+      try {
+        onlineUrl = await uploadQuotePdfToStorage({
+          order,
+          customer,
+          parts,
+          filaments,
+          settings,
+          includePaymentInfo: !isPendingQuote
+        });
+      } catch (e) {
+        console.warn('Upload de PDF online não concluído:', e);
+      }
+
+      const docLinkText = onlineUrl 
+        ? `\n\n📄 *Visualizar / Baixar PDF Oficial:* \n${onlineUrl}\n`
+        : `\n\n📄 *Documento Oficial em PDF:* Anexo a esta conversa.\n`;
+
+      const msg = `${titleHeader}\n\n` +
+        `Olá ${customer?.name || 'Cliente'}! Segue o resumo:\n\n` +
+        `${itemsText}\n\n` +
+        `Subtotal: ${formatCurrency((order.items || []).reduce((s, i) => s + (i.unitPrice * i.quantity), 0))}\n` +
+        (order.discount > 0 ? `Desconto: - ${formatCurrency(order.discount)}\n` : '') +
+        `*Total Final:* ${formatCurrency(order.totalValue)}\n` +
+        conditionText +
+        pixPaymentText +
+        docLinkText + `\n` +
+        (isPendingQuote 
+          ? `Ficamos à disposição para tirar dúvidas e iniciar a produção assim que aprovado!` 
+          : `Obrigado pela preferência! Qualquer dúvida estamos à disposição.`);
+
+      // 3. Web Share API com arquivo (Android / iOS)
+      const pdfFile = new File([pdfBlob], filename, { type: 'application/pdf' });
+      if (typeof navigator !== 'undefined' && navigator.canShare && navigator.canShare({ files: [pdfFile] })) {
+        try {
+          await navigator.share({
+            title: filename,
+            text: msg,
+            files: [pdfFile]
+          });
+          setPageNotice({
+            type: 'success',
+            message: `Arquivo PDF oficial (${filename}) compartilhado com sucesso diretamente no WhatsApp!`
+          });
+          setTimeout(() => setPageNotice(null), 4000);
+          return;
+        } catch (shareErr: any) {
+          if (shareErr.name === 'AbortError') {
+            setPageNotice(null);
+            return;
+          }
+          console.warn('Share nativo cancelado:', shareErr);
+        }
+      }
+
+      // 4. Download local automático + WhatsApp Web com link do PDF
+      const blobUrl = URL.createObjectURL(pdfBlob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 2000);
+
+      const encoded = encodeURIComponent(msg);
+      if (phone && phone.length >= 10) {
+        window.open(`https://wa.me/55${phone}?text=${encoded}`, '_blank');
+      } else {
+        window.open(`https://wa.me/?text=${encoded}`, '_blank');
+      }
+
+      setPageNotice({
+        type: 'success',
+        message: onlineUrl
+          ? `WhatsApp aberto com o link do PDF! Além disso, o arquivo (${filename}) foi baixado no seu computador. No WhatsApp Web, para enviar o documento físico, basta arrastá-lo para a conversa ou clicar em Anexo (📎) > Documento.`
+          : `WhatsApp aberto e arquivo (${filename}) baixado com sucesso! No WhatsApp Web, basta arrastar o PDF para a conversa ou clicar em Anexo (📎) > Documento.`
+      });
+      setTimeout(() => setPageNotice(null), 7000);
+    } catch (err: any) {
+      console.error('Erro ao gerar PDF para WhatsApp:', err);
+      // Fallback padrão
+      const basicMsg = `${titleHeader}\n\nOlá ${customer?.name || 'Cliente'}! Segue o resumo do seu pedido:\n\n${itemsText}\n\n*Total:* ${formatCurrency(order.totalValue)}`;
+      const encoded = encodeURIComponent(basicMsg);
+      if (phone && phone.length >= 10) {
+        window.open(`https://wa.me/55${phone}?text=${encoded}`, '_blank');
+      } else {
+        window.open(`https://wa.me/?text=${encoded}`, '_blank');
+      }
+      setPageNotice({
+        type: 'info',
+        message: 'WhatsApp aberto! Para enviar o PDF técnico, clique no botão "PDF" no card do pedido.'
+      });
+      setTimeout(() => setPageNotice(null), 4000);
     }
   };
 
   const handleTogglePaymentStatus = async (order: Order, e: React.MouseEvent) => {
     e.stopPropagation();
+    if (!user) return;
+
+    if (normalizeOrderStatus(order.status) === OrderStatus.PENDING) {
+      setPageNotice({
+        type: 'info',
+        message: 'Este registro é um orçamento comercial sob aprovação. Mude o status para "Na Fila de Impressão" para aprovar o pedido antes de registrar recebimentos.'
+      });
+      setTimeout(() => setPageNotice(null), 4000);
+      return;
+    }
+
     const currentlyPaid = isOrderPaid(order);
     const newPaid = !currentlyPaid;
     const chosenMethod = order.paymentMethod || PaymentMethod.PIX;
@@ -1611,7 +1776,8 @@ export const Orders: React.FC = () => {
           payments: updatedPayments,
           paymentMethod: chosenMethod
         })
-        .eq('id', order.id);
+        .eq('id', order.id)
+        .eq('user_id', user.id);
 
       if (error) {
         throw new Error(error.message || 'Falha ao atualizar pedido no Supabase');
@@ -1785,29 +1951,36 @@ export const Orders: React.FC = () => {
                           {order.paymentMethod || 'Pix'}
                         </span>
                         
-                        {/* Botão de Status de Pagamento (1 clique para alternar) */}
-                        <button
-                          type="button"
-                          onClick={(e) => handleTogglePaymentStatus(order, e)}
-                          title={isPaid ? "Pagamento Confirmado (Em Caixa). Clique para marcar como Aguardando." : "Aguardando Pagamento do Cliente (A Receber). Clique para confirmar recebimento."}
-                          className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border flex items-center gap-1 transition-all active:scale-95 ${
-                            isPaid
-                              ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/25'
-                              : 'bg-amber-500/15 text-amber-300 border-amber-500/30 hover:bg-emerald-500/20 hover:text-emerald-300 hover:border-emerald-500/40'
-                          }`}
-                        >
-                          {isPaid ? (
-                            <>
-                              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                              <span>Pago</span>
-                            </>
-                          ) : (
-                            <>
-                              <Clock className="w-3 h-3 text-amber-400" />
-                              <span>Aguardando Pagamento</span>
-                            </>
-                          )}
-                        </button>
+                        {/* Botão de Status de Pagamento (Orçamentos não possuem cobrança pendente) */}
+                        {normalizeOrderStatus(order.status) === OrderStatus.PENDING ? (
+                          <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full border bg-amber-500/10 text-amber-300 border-amber-500/30 flex items-center gap-1" title="Orçamento Comercial Informativo (Sujeito à Aprovação)">
+                            <FileText className="w-3 h-3 text-amber-400" />
+                            <span>Orçamento</span>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={(e) => handleTogglePaymentStatus(order, e)}
+                            title={isPaid ? "Pagamento Confirmado (Em Caixa). Clique para marcar como Aguardando." : "Aguardando Pagamento do Cliente (A Receber). Clique para confirmar recebimento."}
+                            className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border flex items-center gap-1 transition-all active:scale-95 ${
+                              isPaid
+                                ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/25'
+                                : 'bg-amber-500/15 text-amber-300 border-amber-500/30 hover:bg-emerald-500/20 hover:text-emerald-300 hover:border-emerald-500/40'
+                            }`}
+                          >
+                            {isPaid ? (
+                              <>
+                                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                                <span>Pago</span>
+                              </>
+                            ) : (
+                              <>
+                                <Clock className="w-3 h-3 text-amber-400" />
+                                <span>Aguardando Pagamento</span>
+                              </>
+                            )}
+                          </button>
+                        )}
 
                         <span className="text-[10px] font-bold text-zinc-500 uppercase">
                           #{order.id.slice(0, 5)}
@@ -1828,9 +2001,15 @@ export const Orders: React.FC = () => {
                         </p>
                       )}
                       <span className="text-xl font-black text-emerald-500">{formatCurrency(order.totalValue)}</span>
-                      <p className={`text-[10px] font-bold mt-0.5 flex items-center justify-end gap-1 ${isPaid ? 'text-emerald-400' : 'text-amber-400'}`}>
-                        {isPaid ? '✓ Em Caixa' : '⏳ A Receber'}
-                      </p>
+                      {normalizeOrderStatus(order.status) === OrderStatus.PENDING ? (
+                        <p className="text-[10px] text-zinc-500 mt-0.5 flex items-center justify-end gap-1">
+                          <span>📋 Sem cobrança</span>
+                        </p>
+                      ) : (
+                        <p className={`text-[10px] font-bold mt-0.5 flex items-center justify-end gap-1 ${isPaid ? 'text-emerald-400' : 'text-amber-400'}`}>
+                          {isPaid ? '✓ Em Caixa' : '⏳ A Receber'}
+                        </p>
+                      )}
                     </div>
 
                     {/* Mudança de Status Rápida com emojis e labels de fábrica */}
@@ -1851,7 +2030,9 @@ export const Orders: React.FC = () => {
                     <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
                       <button 
                         onClick={() => setQuoteModalOrder(order)} 
-                        title="Gerar Orçamento Oficial em PDF"
+                        title={normalizeOrderStatus(order.status) === OrderStatus.PENDING 
+                          ? "Gerar Orçamento Oficial em PDF (Informativo)" 
+                          : "Gerar Pedido em PDF (com Dados de Pagamento Pix)"}
                         className="p-2 bg-blue-500/10 text-blue-400 hover:bg-blue-600 hover:text-white rounded-lg transition-colors flex items-center gap-1 font-bold text-xs"
                       >
                         <FileText className="w-4 h-4" />
@@ -2426,6 +2607,19 @@ export const Orders: React.FC = () => {
                 </div>
               )}
 
+              {/* Banner Informativo quando o status é Orçamento (Aguardando Aprovação) */}
+              {normalizeOrderStatus(orderForm.status) === OrderStatus.PENDING && (
+                <div className="p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-2xl flex items-start gap-2.5 text-xs text-amber-200">
+                  <Info className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <strong className="block font-bold text-amber-300">Modo Orçamento Comercial (Informativo):</strong>
+                    <p className="text-[11px] text-zinc-300 mt-0.5 leading-relaxed">
+                      Este registro é um orçamento sujeito à aprovação do cliente. Ele é estritamente comercial: <strong>não gera cobrança, não altera o caixa e não debita estoque</strong>. A definição e execução do pagamento serão ativadas quando o pedido for aprovado.
+                    </p>
+                  </div>
+                </div>
+              )}
+
               {/* 4. STATUS NO FLUXO DE MANUFATURA 3D */}
               <div className="space-y-2.5 pt-2 border-t border-zinc-800/80">
                 <div className="flex items-center justify-between">
@@ -2463,7 +2657,9 @@ export const Orders: React.FC = () => {
               {/* 5. FORMA DE PAGAMENTO E DESCONTO */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-zinc-800/80">
                 <div>
-                  <label className="text-xs font-black uppercase text-zinc-400 tracking-wider block mb-2">5. Forma de Pagamento</label>
+                  <label className="text-xs font-black uppercase text-zinc-400 tracking-wider block mb-2">
+                    {normalizeOrderStatus(orderForm.status) === OrderStatus.PENDING ? '5. Forma de Pagamento (Opcional no Orçamento)' : '5. Forma de Pagamento'}
+                  </label>
                   <div className="grid grid-cols-3 gap-2">
                     {[
                       { id: PaymentMethod.PIX, label: 'Pix (0%)', icon: <QrCode className="w-4 h-4" /> },
@@ -2492,12 +2688,12 @@ export const Orders: React.FC = () => {
                       </button>
                     ))}
                   </div>
-                  {orderForm.paymentMethod === PaymentMethod.PIX && (
+                  {orderForm.paymentMethod === PaymentMethod.PIX && normalizeOrderStatus(orderForm.status) !== OrderStatus.PENDING && (
                     <p className="text-[10px] text-zinc-400 mt-2">
                       {settings.businessInfo?.pixKey ? (
                         <span className="text-emerald-400 flex items-center gap-1">
                           <CheckCircle2 className="w-3 h-3 text-emerald-400 flex-shrink-0" />
-                          <span>Chave Pix cadastrada: será inserida automaticamente com QR Code no PDF.</span>
+                          <span>Chave Pix cadastrada para cobrança deste pedido.</span>
                         </span>
                       ) : (
                         <span className="text-amber-400 flex items-center gap-1">
@@ -2526,48 +2722,57 @@ export const Orders: React.FC = () => {
                 </div>
 
                 {/* Seleção da Situação do Pagamento (Regime de Caixa) */}
-                <div className="col-span-1 sm:col-span-2 p-3.5 bg-zinc-900/90 border border-zinc-800 rounded-2xl space-y-2.5">
-                  <div className="flex items-center justify-between flex-wrap gap-1">
-                    <label className="text-xs font-black uppercase text-zinc-300 tracking-wider flex items-center gap-1.5">
-                      <DollarSign className="w-4 h-4 text-emerald-400" />
-                      <span>Situação do Pagamento (Regime de Caixa)</span>
-                    </label>
-                    <span className="text-[10px] text-zinc-500 font-medium">Lançamento em faturamento condicionado ao pagamento</span>
+                {normalizeOrderStatus(orderForm.status) === OrderStatus.PENDING ? (
+                  <div className="col-span-1 sm:col-span-2 p-3.5 bg-zinc-900/90 border border-zinc-800 rounded-2xl flex items-center gap-2.5 text-xs text-zinc-400">
+                    <Clock className="w-4 h-4 text-amber-400 flex-shrink-0" />
+                    <span>
+                      <strong className="text-zinc-300">Situação do Pagamento:</strong> Não aplicável em orçamentos comerciais. Não há cobrança ativa nem movimentação financeira até a aprovação formal do cliente.
+                    </span>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    <button
-                      type="button"
-                      onClick={() => setOrderForm(prev => ({ ...prev, isPaid: false }))}
-                      className={`p-3 rounded-xl border text-left flex items-start gap-3 transition-all ${
-                        !orderForm.isPaid
-                          ? 'bg-amber-500/15 border-amber-500/60 text-amber-300 ring-2 ring-amber-500/30'
-                          : 'bg-zinc-800/40 border-zinc-800 text-zinc-400 hover:bg-zinc-800'
-                      }`}
-                    >
-                      <Clock className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
-                      <div>
-                        <p className="text-xs font-bold leading-tight">⏳ Aguardando Pagamento (A Receber)</p>
-                        <p className="text-[10px] text-zinc-400 mt-1">O valor ficará registrado como a receber e não inflará o faturamento realizado até a quitação.</p>
-                      </div>
-                    </button>
+                ) : (
+                  <div className="col-span-1 sm:col-span-2 p-3.5 bg-zinc-900/90 border border-zinc-800 rounded-2xl space-y-2.5">
+                    <div className="flex items-center justify-between flex-wrap gap-1">
+                      <label className="text-xs font-black uppercase text-zinc-300 tracking-wider flex items-center gap-1.5">
+                        <DollarSign className="w-4 h-4 text-emerald-400" />
+                        <span>Situação do Pagamento (Regime de Caixa)</span>
+                      </label>
+                      <span className="text-[10px] text-zinc-500 font-medium">Lançamento em faturamento condicionado ao pagamento</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <button
+                        type="button"
+                        onClick={() => setOrderForm(prev => ({ ...prev, isPaid: false }))}
+                        className={`p-3 rounded-xl border text-left flex items-start gap-3 transition-all ${
+                          !orderForm.isPaid
+                            ? 'bg-amber-500/15 border-amber-500/60 text-amber-300 ring-2 ring-amber-500/30'
+                            : 'bg-zinc-800/40 border-zinc-800 text-zinc-400 hover:bg-zinc-800'
+                        }`}
+                      >
+                        <Clock className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+                        <div>
+                          <p className="text-xs font-bold leading-tight">⏳ Aguardando Pagamento (A Receber)</p>
+                          <p className="text-[10px] text-zinc-400 mt-1">O valor ficará registrado como a receber e não inflará o faturamento realizado até a quitação.</p>
+                        </div>
+                      </button>
 
-                    <button
-                      type="button"
-                      onClick={() => setOrderForm(prev => ({ ...prev, isPaid: true }))}
-                      className={`p-3 rounded-xl border text-left flex items-start gap-3 transition-all ${
-                        orderForm.isPaid
-                          ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300 ring-2 ring-emerald-500/30'
-                          : 'bg-zinc-800/40 border-zinc-800 text-zinc-400 hover:bg-zinc-800'
-                      }`}
-                    >
-                      <CheckCircle2 className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" />
-                      <div>
-                        <p className="text-xs font-bold leading-tight">✅ Pagamento Confirmado (Em Caixa)</p>
-                        <p className="text-[10px] text-zinc-400 mt-1">Cliente já pagou. O valor entra de imediato no Faturamento Realizado do período.</p>
-                      </div>
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => setOrderForm(prev => ({ ...prev, isPaid: true }))}
+                        className={`p-3 rounded-xl border text-left flex items-start gap-3 transition-all ${
+                          orderForm.isPaid
+                            ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300 ring-2 ring-emerald-500/30'
+                            : 'bg-zinc-800/40 border-zinc-800 text-zinc-400 hover:bg-zinc-800'
+                        }`}
+                      >
+                        <CheckCircle2 className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" />
+                        <div>
+                          <p className="text-xs font-bold leading-tight">✅ Pagamento Confirmado (Em Caixa)</p>
+                          <p className="text-[10px] text-zinc-400 mt-1">Cliente já pagou. O valor entra de imediato no Faturamento Realizado do período.</p>
+                        </div>
+                      </button>
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
 
               {/* 6. CALCULADORA FINANCEIRA AVANÇADA DE VENDA (pricingCalculator) */}
@@ -2942,6 +3147,42 @@ export const Orders: React.FC = () => {
                 <span>Status:</span>
                 <span className="font-bold text-emerald-400">{receiptOrder.status}</span>
               </div>
+
+              {/* Box de Pix para Pagamento se o pedido estiver aprovado */}
+              {normalizeOrderStatus(receiptOrder.status) !== OrderStatus.PENDING && 
+               (!receiptOrder.paymentMethod || receiptOrder.paymentMethod === PaymentMethod.PIX) && 
+               settings.businessInfo?.pixKey && (
+                <div className="mt-3 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl space-y-1.5 text-xs text-left">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-emerald-400 flex items-center gap-1.5 text-[11px]">
+                      <QrCode className="w-3.5 h-3.5" />
+                      Dados para Pagamento Pix
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(settings.businessInfo?.pixKey || '');
+                        setCopiedReceiptPix(true);
+                        setTimeout(() => setCopiedReceiptPix(false), 2500);
+                      }}
+                      className="px-2 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-bold text-[10px] flex items-center gap-1 transition cursor-pointer"
+                    >
+                      {copiedReceiptPix ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedReceiptPix ? 'Copiado!' : 'Copiar Chave'}</span>
+                    </button>
+                  </div>
+                  <div className="font-mono text-zinc-200 text-xs bg-zinc-900/80 p-2 rounded border border-zinc-800 break-all select-all font-bold">
+                    {settings.businessInfo.pixKey}
+                  </div>
+                  {(settings.businessInfo.pixReceiverName || settings.businessInfo.pixBank) && (
+                    <p className="text-[10px] text-zinc-400">
+                      {settings.businessInfo.pixReceiverName && <span>Favorecido: <strong className="text-zinc-200">{settings.businessInfo.pixReceiverName}</strong></span>}
+                      {settings.businessInfo.pixReceiverName && settings.businessInfo.pixBank && <span> • </span>}
+                      {settings.businessInfo.pixBank && <span>Banco: <strong className="text-zinc-200">{settings.businessInfo.pixBank}</strong></span>}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Ações do Comprovante */}

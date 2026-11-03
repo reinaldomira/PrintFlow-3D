@@ -8,8 +8,16 @@ import {
   QrCode, Wallet, ShieldCheck, AlertTriangle
 } from 'lucide-react';
 import { PWAInstallButton } from '../components/PWAInstallButton';
-import { processAndUploadLogo } from '../services/settingsService';
+import { processAndUploadLogo, DEFAULT_SETTINGS } from '../services/settingsService';
 import { PixKeyType, validatePixKey, formatPixKeyForDisplay, getPixKeyTypeLabel } from '../services/pixService';
+
+const POPULAR_FILAMENT_BRANDS = [
+  'Bambu Lab', 'eSUN', 'Sunlu', 'Elegoo', 'Voolt3D', '3D Prime', 'GTMax', 'Creality', '3D Fila', 'Polymaker'
+];
+
+const POPULAR_CATEGORIES = [
+  'Chaveiro', 'Organizador', 'Decoração', 'Suporte', 'Action Figure', 'Peças Técnicas', 'Luminárias', 'Outros'
+];
 
 const Settings: React.FC = () => {
   const { 
@@ -25,6 +33,8 @@ const Settings: React.FC = () => {
   } = useApp();
   const [newBrand, setNewBrand] = useState('');
   const [newCategory, setNewCategory] = useState('');
+  const [brandNotice, setBrandNotice] = useState<{ type: 'success' | 'warn'; text: string } | null>(null);
+  const [categoryNotice, setCategoryNotice] = useState<{ type: 'success' | 'warn'; text: string } | null>(null);
   const [copiedSql, setCopiedSql] = useState(false);
   const [copiedSyncSql, setCopiedSyncSql] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
@@ -86,6 +96,8 @@ ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS default_payment_fee_percent
 ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS default_marketplace_fee_percent numeric DEFAULT 0.00;
 ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS default_tax_percent numeric DEFAULT 6.00;
 ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS auto_refresh_orders boolean DEFAULT true;
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS filament_brands text[] DEFAULT ARRAY['3D Prime', 'Creality', 'Voolt3D', 'GTMax'];
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS categories text[] DEFAULT ARRAY['Chaveiro', 'Organizador', 'Decoração'];
 ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();
 ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS version integer DEFAULT 1;
 
@@ -290,18 +302,63 @@ ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFA
     saveBusinessData(updated);
   };
 
-  const addItem = (key: 'filamentBrands' | 'categories', value: string, setter: (v: string) => void) => {
-    if (!value.trim()) return;
-    const current = settings[key] || [];
-    if (current.includes(value)) return;
-    handleUpdate(key, [...current, value]);
+  const addItem = async (key: 'filamentBrands' | 'categories', value: string, setter: (v: string) => void) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    const current = (settings[key] || []).filter(Boolean);
+    const alreadyExists = current.some(item => item.trim().toLowerCase() === trimmed.toLowerCase());
+    
+    if (alreadyExists) {
+      if (key === 'filamentBrands') {
+        setBrandNotice({ type: 'warn', text: `A marca "${trimmed}" já está cadastrada na lista.` });
+        setTimeout(() => setBrandNotice(null), 3500);
+      } else {
+        setCategoryNotice({ type: 'warn', text: `A categoria "${trimmed}" já está na lista.` });
+        setTimeout(() => setCategoryNotice(null), 3500);
+      }
+      setter('');
+      return;
+    }
+
+    const updated = [...current, trimmed];
     setter('');
+
+    if (key === 'filamentBrands') {
+      setBrandNotice({ type: 'success', text: `Marca "${trimmed}" adicionada com sucesso!` });
+      setTimeout(() => setBrandNotice(null), 3500);
+    } else {
+      setCategoryNotice({ type: 'success', text: `Categoria "${trimmed}" adicionada com sucesso!` });
+      setTimeout(() => setCategoryNotice(null), 3500);
+    }
+
+    await handleUpdate(key, updated);
   };
 
-  const removeItem = (key: 'filamentBrands' | 'categories', index: number) => {
+  const removeItem = async (key: 'filamentBrands' | 'categories', index: number) => {
     const current = [...(settings[key] || [])];
+    const removedName = current[index];
     current.splice(index, 1);
-    handleUpdate(key, current);
+    await handleUpdate(key, current);
+    
+    if (key === 'filamentBrands') {
+      setBrandNotice({ type: 'success', text: `Marca "${removedName}" removida.` });
+      setTimeout(() => setBrandNotice(null), 3000);
+    } else {
+      setCategoryNotice({ type: 'success', text: `Categoria "${removedName}" removida.` });
+      setTimeout(() => setCategoryNotice(null), 3000);
+    }
+  };
+
+  const resetDefaultItems = async (key: 'filamentBrands' | 'categories') => {
+    const defaults = DEFAULT_SETTINGS[key] || [];
+    await handleUpdate(key, defaults);
+    if (key === 'filamentBrands') {
+      setBrandNotice({ type: 'success', text: 'Marcas padrão restauradas com sucesso!' });
+      setTimeout(() => setBrandNotice(null), 3500);
+    } else {
+      setCategoryNotice({ type: 'success', text: 'Categorias padrão restauradas com sucesso!' });
+      setTimeout(() => setCategoryNotice(null), 3500);
+    }
   };
 
   const copySql = () => {
@@ -1014,47 +1071,241 @@ ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFA
 
       {/* Filament Brands */}
       <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 space-y-4">
-        <div className="flex items-center gap-2 mb-2">
-          <Layers className="w-4 h-4 text-emerald-500" />
-          <h3 className="font-black uppercase text-xs tracking-widest text-zinc-400">Marcas de Filamento</h3>
+        <div className="flex items-center justify-between gap-2 mb-1">
+          <div className="flex items-center gap-2">
+            <Layers className="w-4 h-4 text-emerald-500" />
+            <h3 className="font-black uppercase text-xs tracking-widest text-zinc-400">
+              Marcas de Filamento
+            </h3>
+          </div>
+          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400 border border-zinc-700">
+            {(settings.filamentBrands || []).length} cadastradas
+          </span>
         </div>
+
+        <p className="text-xs text-zinc-500">
+          Marcas disponíveis para seleção rápida no cadastro de carretéis de filamento e orçamentos.
+        </p>
+
+        {brandNotice && (
+          <div className={`p-3 rounded-xl text-xs font-bold flex items-center gap-2 animate-in fade-in duration-200 ${
+            brandNotice.type === 'success' 
+              ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400' 
+              : 'bg-amber-500/10 border border-amber-500/30 text-amber-400'
+          }`}>
+            {brandNotice.type === 'success' ? (
+              <Check className="w-4 h-4 flex-shrink-0" />
+            ) : (
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            )}
+            <span>{brandNotice.text}</span>
+          </div>
+        )}
+
         <div className="flex gap-2">
-          <input type="text" placeholder="Nova marca..." className="flex-1 bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm font-bold outline-none"
-            value={newBrand} onChange={e => setNewBrand(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && addItem('filamentBrands', newBrand, setNewBrand)}
+          <input 
+            type="text" 
+            placeholder="Digite o nome da marca (ex: Bambu Lab, Sunlu)..." 
+            className="flex-1 bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm font-bold text-white placeholder-zinc-500 outline-none focus:border-emerald-500 transition-colors"
+            value={newBrand} 
+            onChange={e => setNewBrand(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                addItem('filamentBrands', newBrand, setNewBrand);
+              }
+            }}
           />
-          <button onClick={() => addItem('filamentBrands', newBrand, setNewBrand)} className="p-3 bg-emerald-500 text-zinc-950 rounded-xl transition-transform active:scale-90"><Plus /></button>
+          <button 
+            type="button"
+            onClick={() => addItem('filamentBrands', newBrand, setNewBrand)} 
+            disabled={!newBrand.trim()}
+            title="Adicionar Marca"
+            className="px-4 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 disabled:hover:bg-emerald-500 text-zinc-950 font-bold rounded-xl transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer shadow-lg shadow-emerald-500/10"
+          >
+            <Plus className="w-5 h-5" />
+            <span className="hidden sm:inline text-xs font-black uppercase">Adicionar</span>
+          </button>
         </div>
-        <div className="flex flex-wrap gap-2 pt-2">
-          {(settings.filamentBrands || []).map((brand, idx) => (
-            <div key={idx} className="bg-zinc-800 pl-4 pr-2 py-2 rounded-xl flex items-center gap-3 border border-zinc-700 group">
-              <span className="text-xs font-bold text-zinc-300">{brand}</span>
-              <button onClick={() => removeItem('filamentBrands', idx)} className="p-1 text-zinc-600 hover:text-red-500"><Trash2 className="w-3.5 h-3.5" /></button>
+
+        {/* Sugestões rápidas de marcas populares */}
+        {(() => {
+          const current = (settings.filamentBrands || []).map(b => b.trim().toLowerCase());
+          const unadded = POPULAR_FILAMENT_BRANDS.filter(b => !current.includes(b.toLowerCase()));
+          if (unadded.length === 0) return null;
+          return (
+            <div className="pt-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500 block mb-1.5">
+                Sugestões Populares (toque para adicionar):
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {unadded.slice(0, 6).map(sug => (
+                  <button
+                    key={sug}
+                    type="button"
+                    onClick={() => addItem('filamentBrands', sug, setNewBrand)}
+                    className="text-[11px] font-semibold bg-zinc-800/80 hover:bg-zinc-700 border border-zinc-700 hover:border-emerald-500/50 text-zinc-300 hover:text-emerald-300 px-2.5 py-1 rounded-lg flex items-center gap-1 transition-all cursor-pointer"
+                  >
+                    <Plus className="w-3 h-3 text-emerald-400" />
+                    <span>{sug}</span>
+                  </button>
+                ))}
+              </div>
             </div>
-          ))}
+          );
+        })()}
+
+        {/* Lista de marcas cadastradas */}
+        <div className="flex flex-wrap gap-2 pt-2 min-h-[40px] items-center">
+          {(settings.filamentBrands || []).length === 0 ? (
+            <div className="flex items-center justify-between w-full p-3 rounded-xl bg-zinc-800/40 border border-zinc-800 text-xs text-zinc-500">
+              <span>Nenhuma marca cadastrada.</span>
+              <button
+                type="button"
+                onClick={() => resetDefaultItems('filamentBrands')}
+                className="text-xs font-bold text-emerald-400 hover:text-emerald-300 transition-colors"
+              >
+                Restaurar Padrões
+              </button>
+            </div>
+          ) : (
+            (settings.filamentBrands || []).map((brand, idx) => (
+              <div 
+                key={`${brand}-${idx}`} 
+                className="bg-zinc-800 pl-3.5 pr-2 py-2 rounded-xl flex items-center gap-2.5 border border-zinc-700 hover:border-zinc-600 group transition-colors shadow-sm"
+              >
+                <span className="text-xs font-bold text-zinc-200">{brand}</span>
+                <button 
+                  type="button"
+                  onClick={() => removeItem('filamentBrands', idx)} 
+                  className="p-1 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                  title={`Remover marca ${brand}`}
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))
+          )}
         </div>
       </div>
 
       {/* Categories */}
       <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 space-y-4">
-        <div className="flex items-center gap-2 mb-2">
-          <Tag className="w-4 h-4 text-emerald-500" />
-          <h3 className="font-black uppercase text-xs tracking-widest text-zinc-400">Categorias de Peças</h3>
+        <div className="flex items-center justify-between gap-2 mb-1">
+          <div className="flex items-center gap-2">
+            <Tag className="w-4 h-4 text-emerald-500" />
+            <h3 className="font-black uppercase text-xs tracking-widest text-zinc-400">
+              Categorias de Peças
+            </h3>
+          </div>
+          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400 border border-zinc-700">
+            {(settings.categories || []).length} cadastradas
+          </span>
         </div>
+
+        <p className="text-xs text-zinc-500">
+          Categorias para organizar o catálogo de modelos, peças e orçamentos do seu negócio.
+        </p>
+
+        {categoryNotice && (
+          <div className={`p-3 rounded-xl text-xs font-bold flex items-center gap-2 animate-in fade-in duration-200 ${
+            categoryNotice.type === 'success' 
+              ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400' 
+              : 'bg-amber-500/10 border border-amber-500/30 text-amber-400'
+          }`}>
+            {categoryNotice.type === 'success' ? (
+              <Check className="w-4 h-4 flex-shrink-0" />
+            ) : (
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            )}
+            <span>{categoryNotice.text}</span>
+          </div>
+        )}
+
         <div className="flex gap-2">
-          <input type="text" placeholder="Nova categoria..." className="flex-1 bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm font-bold outline-none"
-            value={newCategory} onChange={e => setNewCategory(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && addItem('categories', newCategory, setNewCategory)}
+          <input 
+            type="text" 
+            placeholder="Nova categoria (ex: Action Figure, Suporte)..." 
+            className="flex-1 bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm font-bold text-white placeholder-zinc-500 outline-none focus:border-emerald-500 transition-colors"
+            value={newCategory} 
+            onChange={e => setNewCategory(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                addItem('categories', newCategory, setNewCategory);
+              }
+            }}
           />
-          <button onClick={() => addItem('categories', newCategory, setNewCategory)} className="p-3 bg-emerald-500 text-zinc-950 rounded-xl transition-transform active:scale-90"><Plus /></button>
+          <button 
+            type="button"
+            onClick={() => addItem('categories', newCategory, setNewCategory)} 
+            disabled={!newCategory.trim()}
+            title="Adicionar Categoria"
+            className="px-4 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 disabled:hover:bg-emerald-500 text-zinc-950 font-bold rounded-xl transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer shadow-lg shadow-emerald-500/10"
+          >
+            <Plus className="w-5 h-5" />
+            <span className="hidden sm:inline text-xs font-black uppercase">Adicionar</span>
+          </button>
         </div>
-        <div className="flex flex-wrap gap-2 pt-2">
-          {(settings.categories || []).map((cat, idx) => (
-            <div key={idx} className="bg-zinc-800 pl-4 pr-2 py-2 rounded-xl flex items-center gap-3 border border-zinc-700 group">
-              <span className="text-xs font-bold text-zinc-300">{cat}</span>
-              <button onClick={() => removeItem('categories', idx)} className="p-1 text-zinc-600 hover:text-red-500"><Trash2 className="w-3.5 h-3.5" /></button>
+
+        {/* Sugestões rápidas de categorias populares */}
+        {(() => {
+          const current = (settings.categories || []).map(c => c.trim().toLowerCase());
+          const unadded = POPULAR_CATEGORIES.filter(c => !current.includes(c.toLowerCase()));
+          if (unadded.length === 0) return null;
+          return (
+            <div className="pt-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500 block mb-1.5">
+                Sugestões Rápidas:
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {unadded.slice(0, 5).map(sug => (
+                  <button
+                    key={sug}
+                    type="button"
+                    onClick={() => addItem('categories', sug, setNewCategory)}
+                    className="text-[11px] font-semibold bg-zinc-800/80 hover:bg-zinc-700 border border-zinc-700 hover:border-emerald-500/50 text-zinc-300 hover:text-emerald-300 px-2.5 py-1 rounded-lg flex items-center gap-1 transition-all cursor-pointer"
+                  >
+                    <Plus className="w-3 h-3 text-emerald-400" />
+                    <span>{sug}</span>
+                  </button>
+                ))}
+              </div>
             </div>
-          ))}
+          );
+        })()}
+
+        {/* Lista de categorias cadastradas */}
+        <div className="flex flex-wrap gap-2 pt-2 min-h-[40px] items-center">
+          {(settings.categories || []).length === 0 ? (
+            <div className="flex items-center justify-between w-full p-3 rounded-xl bg-zinc-800/40 border border-zinc-800 text-xs text-zinc-500">
+              <span>Nenhuma categoria cadastrada.</span>
+              <button
+                type="button"
+                onClick={() => resetDefaultItems('categories')}
+                className="text-xs font-bold text-emerald-400 hover:text-emerald-300 transition-colors"
+              >
+                Restaurar Padrões
+              </button>
+            </div>
+          ) : (
+            (settings.categories || []).map((cat, idx) => (
+              <div 
+                key={`${cat}-${idx}`} 
+                className="bg-zinc-800 pl-3.5 pr-2 py-2 rounded-xl flex items-center gap-2.5 border border-zinc-700 hover:border-zinc-600 group transition-colors shadow-sm"
+              >
+                <span className="text-xs font-bold text-zinc-200">{cat}</span>
+                <button 
+                  type="button"
+                  onClick={() => removeItem('categories', idx)} 
+                  className="p-1 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                  title={`Remover categoria ${cat}`}
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))
+          )}
         </div>
       </div>
     </div>

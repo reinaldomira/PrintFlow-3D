@@ -36,7 +36,7 @@ const Printers: React.FC = () => {
 
       let result;
       if (editingPrinter.id) {
-        result = await supabase.from('printers').update(payload).eq('id', editingPrinter.id);
+        result = await supabase.from('printers').update(payload).eq('id', editingPrinter.id).eq('user_id', user.id);
       } else {
         result = await supabase.from('printers').insert([{ ...payload, createdAt: new Date().toISOString() }]);
       }
@@ -56,14 +56,14 @@ const Printers: React.FC = () => {
   };
 
   const confirmDeletePrinter = async () => {
-    if (!deleteTarget) return;
+    if (!deleteTarget || !user) return;
     setIsDeleting(true);
     const idToDelete = deleteTarget.id;
 
     try {
       // Atualização otimista imediata para feedback instantâneo
       setPrinters(printers.filter(p => p.id !== idToDelete));
-      const { error } = await supabase.from('printers').delete().eq('id', idToDelete);
+      const { error } = await supabase.from('printers').delete().eq('id', idToDelete).eq('user_id', user.id);
       if (error) throw error;
 
       setActionNotice({ type: 'success', message: 'Impressora excluída com sucesso!' });

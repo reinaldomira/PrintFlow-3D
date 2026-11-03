@@ -183,10 +183,10 @@ const Catalog: React.FC = () => {
       let finalResult;
 
       if (editingPart.id) {
-        finalResult = await supabase.from('parts').update(fullPayload).eq('id', editingPart.id).select().single();
+        finalResult = await supabase.from('parts').update(fullPayload).eq('id', editingPart.id).eq('user_id', user.id).select().single();
         if (finalResult.error && isColumnMissingError(finalResult.error)) {
           // Salva sem colunas ausentes no schema nativo; insumos e unitsPerPrint estão seguros no campo recipe embutido
-          finalResult = await supabase.from('parts').update(payload).eq('id', editingPart.id).select().single();
+          finalResult = await supabase.from('parts').update(payload).eq('id', editingPart.id).eq('user_id', user.id).select().single();
         }
       } else {
         payload.createdAt = new Date().toISOString();
@@ -234,7 +234,7 @@ const Catalog: React.FC = () => {
   };
 
   const confirmDeletePart = async () => {
-    if (!deleteTarget) return;
+    if (!deleteTarget || !user) return;
     setIsDeleting(true);
     const idToDelete = deleteTarget.id;
 
@@ -263,7 +263,7 @@ const Catalog: React.FC = () => {
         }
       } catch (e) {}
 
-      const { error } = await supabase.from('parts').delete().eq('id', idToDelete);
+      const { error } = await supabase.from('parts').delete().eq('id', idToDelete).eq('user_id', user.id);
       if (error) throw error;
 
       setActionNotice({ type: 'success', message: 'Modelo excluído do catálogo com sucesso!' });

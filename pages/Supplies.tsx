@@ -245,7 +245,8 @@ export const Supplies: React.FC = () => {
         const { error } = await supabase
           .from('supplies')
           .update(payload)
-          .eq('id', editingSupply.id);
+          .eq('id', editingSupply.id)
+          .eq('user_id', user.id);
         if (error) throw error;
       } else {
         payload.created_at = new Date().toISOString();
@@ -304,7 +305,7 @@ export const Supplies: React.FC = () => {
   // Ajuste rápido de estoque (+/-) com validação confirmada antes de atualizar estado
   const handleQuickAdjust = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (isAdjusting || !stockAdjustItem || adjustAmount === '' || Number(adjustAmount) <= 0) return;
+    if (isAdjusting || !stockAdjustItem || adjustAmount === '' || Number(adjustAmount) <= 0 || !user) return;
     setIsAdjusting(true);
     setActionNotice(null);
 
@@ -316,7 +317,8 @@ export const Supplies: React.FC = () => {
       const { error } = await supabase
         .from('supplies')
         .update({ quantity: newQuantity, updated_at: new Date().toISOString() })
-        .eq('id', stockAdjustItem.id);
+        .eq('id', stockAdjustItem.id)
+        .eq('user_id', user.id);
 
       if (error) throw error;
 
@@ -346,14 +348,14 @@ export const Supplies: React.FC = () => {
 
   // Excluir insumo somente após confirmação do Supabase
   const confirmDeleteSupply = async () => {
-    if (isDeleting || !deleteTarget) return;
+    if (isDeleting || !deleteTarget || !user) return;
     setIsDeleting(true);
     setActionNotice(null);
     const idToDelete = deleteTarget.id;
     const supplyName = deleteTarget.name;
 
     try {
-      const { error } = await supabase.from('supplies').delete().eq('id', idToDelete);
+      const { error } = await supabase.from('supplies').delete().eq('id', idToDelete).eq('user_id', user.id);
       if (error) throw error;
 
       // Remove localmente apenas após confirmação

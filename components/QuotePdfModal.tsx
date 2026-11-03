@@ -1,21 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Order, Customer, Part, Filament, Settings, PaymentMethod } from '../types';
+import { Order, Customer, Part, Filament, Settings, OrderStatus } from '../types';
+import { downloadQuotePdf, getQuotePdfBlob, getRealisticOrderNumber, uploadQuotePdfToStorage } from '../services/quotePdfGenerator';
+import { normalizeOrderStatus, isOrderPaid } from '../utils/statusUtils';
+import { getCompletePixData } from '../services/pixService';
 import { formatCurrency } from '../constants';
-import { downloadQuotePdf, getQuotePdfBlob, getRealisticOrderNumber, resolveOrderPaymentMethod } from '../services/quotePdfGenerator';
 import { 
   X, Download, Printer, MessageCircle, FileText, CheckCircle2, 
-  Layers, Loader2, Share2, Info, AlertTriangle, QrCode, Settings as SettingsIcon,
-  ShieldCheck, CreditCard, Banknote
+  Layers, Loader2, QrCode, Check, Copy
 } from 'lucide-react';
-import { 
-  isPixPaymentMethod, 
-  formatPixKeyForDisplay, 
-  getPixKeyTypeLabel, 
-  getCompletePixData 
-} from '../services/pixService';
-import { supabase } from '../services/supabase';
-import { useApp } from '../context/AppContext';
 
 interface QuotePdfModalProps {
   order: Order;
@@ -34,39 +26,52 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
   settings,
   onClose
 }) => {
-  const { refreshData } = useApp();
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSharingWhatsApp, setIsSharingWhatsApp] = useState(false);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
   const [whatsAppNotice, setWhatsAppNotice] = useState<string | null>(null);
-  const [pixQrCodeUrl, setPixQrCodeUrl] = useState<string | null>(null);
-  const [isUpdatingPayment, setIsUpdatingPayment] = useState(false);
+  const [lastPdfUrl, setLastPdfUrl] = useState<string | null>(null);
+  const [copiedLink, setCopiedLink] = useState(false);
 
-  // Inicializa a forma de pagamento ativa de forma resiliente
-  const [currentPaymentMethod, setCurrentPaymentMethod] = useState<string>(() => resolveOrderPaymentMethod(order));
+  const isPendingQuote = normalizeOrderStatus(order.status) === OrderStatus.PENDING;
+  const isPaid = isOrderPaid(order);
 
-  // Sincroniza se o pedido mudar
-  useEffect(() => {
-    setCurrentPaymentMethod(resolveOrderPaymentMethod(order));
-  }, [order]);
+  // Por padrão, se o pedido já foi aprovado (status !== PENDING), os dados de pagamento vêm ATIVOS.
+  // Se for orçamento pendente, vêm DESATIVADOS por padrão, mas o usuário pode alternar com 1 clique.
+  const [includePaymentInfo, setIncludePaymentInfo] = useState<boolean>(!isPendingQuote);
 
-  const navigate = useNavigate();
   const business = settings.businessInfo || {};
   const companyName = business.companyName || 'PRINT_3Dbr';
   const orderNumStr = getRealisticOrderNumber(order);
-
-  // Pedido ativo com a forma de pagamento atualizada
-  const activeOrder: Order = {
-    ...order,
-    paymentMethod: currentPaymentMethod as any,
-    payment_method: currentPaymentMethod as any
-  };
-
-  const isPix = isPixPaymentMethod(currentPaymentMethod);
-  const hasPixConfigured = Boolean(business.pixKey && business.pixKey.trim() !== '');
-
   const emissionDate = new Date(order.createdAt).toLocaleDateString('pt-BR');
-  
+
+  const subtotal = (order.items || []).reduce((acc, i) => acc + (i.unitPrice * i.quantity), 0);
+  const discount = order.discount || 0;
+  const total = (typeof order.totalValue === 'number' && !isNaN(order.totalValue))
+    ? order.totalValue
+    : Math.max(0, subtotal - discount);
+
+  // Dados do Pix para pré-visualização na folha
+  const [pixPreview, setPixPreview] = useState<{
+    qrCodeDataUrl?: string;
+    formattedKey?: string;
+  } | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    if (includePaymentInfo && business.pixKey) {
+      getCompletePixData(business, total, orderNumStr.replace('#', '')).then(res => {
+        if (isMounted && res.isValid) {
+          setPixPreview({
+            qrCodeDataUrl: res.qrCodeDataUrl,
+            formattedKey: res.formattedKey || business.pixKey
+          });
+        }
+      });
+    }
+    return () => { isMounted = false; };
+  }, [includePaymentInfo, business, total, orderNumStr]);
+
   // Calcula validade (15 dias úteis)
   const calcValidity = () => {
     const d = new Date(order.createdAt);
@@ -84,72 +89,16 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
   };
   const validityInfo = calcValidity();
 
-  const subtotal = (order.items || []).reduce((acc, i) => acc + (i.unitPrice * i.quantity), 0);
-  const discount = order.discount || 0;
-  const total = (typeof order.totalValue === 'number' && !isNaN(order.totalValue))
-    ? order.totalValue
-    : Math.max(0, subtotal - discount);
-
-  // Carrega prévia do QR Code Pix se a modalidade for Pix e houver chave cadastrada
-  useEffect(() => {
-    let isMounted = true;
-    if (isPix && hasPixConfigured) {
-      getCompletePixData(business, total, orderNumStr.replace('#', ''))
-        .then(res => {
-          if (isMounted && res.qrCodeDataUrl) {
-            setPixQrCodeUrl(res.qrCodeDataUrl);
-          }
-        })
-        .catch(err => console.warn('Erro ao gerar QR Code para pré-visualização:', err));
-    }
-    return () => { isMounted = false; };
-  }, [isPix, hasPixConfigured, total, orderNumStr, business]);
-
-  const handleGoToSettings = () => {
-    onClose();
-    navigate('/settings');
-  };
-
-  const handleSelectPaymentMethod = async (newMethod: string) => {
-    if (newMethod === currentPaymentMethod) return;
-    setCurrentPaymentMethod(newMethod);
-    setIsUpdatingPayment(true);
-    try {
-      // Atualiza de forma resiliente tanto payment_method quanto paymentMethod
-      const { error } = await supabase
-        .from('orders')
-        .update({
-          payment_method: newMethod,
-          paymentMethod: newMethod
-        })
-        .eq('id', order.id);
-
-      if (error) {
-        // Fallback apenas para payment_method caso o schema seja estrito
-        await supabase
-          .from('orders')
-          .update({ payment_method: newMethod })
-          .eq('id', order.id);
-      }
-      if (refreshData) {
-        refreshData();
-      }
-    } catch (err) {
-      console.warn('Erro ao atualizar forma de pagamento no banco:', err);
-    } finally {
-      setIsUpdatingPayment(false);
-    }
-  };
-
   const handleDownload = async () => {
     try {
       setIsGenerating(true);
       await downloadQuotePdf({
-        order: activeOrder,
+        order,
         customer,
         parts,
         filaments,
-        settings
+        settings,
+        includePaymentInfo
       });
       setDownloadSuccess(true);
       setTimeout(() => setDownloadSuccess(false), 3000);
@@ -166,87 +115,159 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
   };
 
   /**
+  const [lastPdfUrl, setLastPdfUrl] = useState<string | null>(null);
+  const [copiedLink, setCopiedLink] = useState(false);
+
+  /**
    * Envia o PDF e proposta técnica pelo WhatsApp:
-   * 1. Monta a mensagem completa com dados do cliente, itens, total e Pix.
-   * 2. Abre a conversa no WhatsApp IMEDIATAMENTE (no clique direto do usuário para evitar bloqueio de pop-up pelo navegador).
-   * 3. Faz o download do arquivo PDF oficial para a máquina/celular do usuário anexar na conversa.
+   * 1. Gera o blob binário do PDF e tenta upload para obter link direto em nuvem.
+   * 2. Em dispositivos compatíveis (celulares, tablets ou navegadores modernos), anexa o arquivo PDF
+   *    diretamente no WhatsApp através da Web Share API nativa.
+   * 3. No Desktop (WhatsApp Web), inclui o link direto do PDF na mensagem, baixa o arquivo
+   *    automaticamente e orienta o usuário a arrastar ou anexar via clipe (📎).
    */
   const handleSendWhatsAppPdf = async () => {
     setIsSharingWhatsApp(true);
     setWhatsAppNotice(null);
 
     const phone = customer?.phone?.replace(/\D/g, '') || business.whatsapp?.replace(/\D/g, '') || '';
-    const orderNum = getRealisticOrderNumber(activeOrder);
-    const filename = `Orcamento_${orderNum.replace('#', '')}.pdf`;
+    const orderNum = getRealisticOrderNumber(order);
+    const filename = `${includePaymentInfo ? 'Pedido' : 'Orcamento'}_${orderNum.replace('#', '')}.pdf`;
 
-    const itemsSummary = (activeOrder.items || []).map(i => {
+    const itemsSummary = (order.items || []).map(i => {
       const part = parts.find(p => p.id === i.partId);
       return `• ${i.quantity}x ${i.name || part?.name || 'Item 3D'} - ${formatCurrency((Number(i.unitPrice) || 0) * (Number(i.quantity) || 1))}`;
     }).join('\n');
 
-    const pixSummary = (isPix && hasPixConfigured)
-      ? `\n*DADOS PARA PAGAMENTO VIA PIX:*\n` +
-        `• *Chave:* ${formatPixKeyForDisplay(business.pixKey || '', business.pixKeyType || 'cpf')} (${getPixKeyTypeLabel(business.pixKeyType)})\n` +
-        `• *Titular:* ${business.pixReceiverName || companyName}\n` +
-        (business.pixBank ? `• *Banco:* ${business.pixBank}\n` : '')
-      : '';
-
-    const textMessage = 
-      `Olá ${customer?.name || 'Cliente'}! Segue a proposta técnica de orçamento da *${companyName}*:\n\n` +
-      `*Orçamento:* ${orderNumStr}\n` +
-      `*Data de Emissão:* ${emissionDate}\n\n` +
-      `*Itens:* \n${itemsSummary}\n\n` +
-      (discount > 0 ? `*Desconto em Lote:* -${formatCurrency(discount)}\n` : '') +
-      `*VALOR TOTAL:* ${formatCurrency(total)}\n` +
-      `*Condição de Pagamento:* ${currentPaymentMethod || 'Pix'}\n` +
-      pixSummary +
-      `\nO documento oficial em PDF com especificações e QR Code para pagamento está sendo anexado. Qualquer dúvida estamos à disposição!`;
-
-    const encodedText = encodeURIComponent(textMessage);
-    const waUrl = phone ? `https://wa.me/55${phone}?text=${encodedText}` : `https://wa.me/?text=${encodedText}`;
-
-    // 1. Abre a conversa do WhatsApp imediatamente no clique do usuário (evita bloqueio de popup)
-    const waWindow = window.open(waUrl, '_blank');
-    if (!waWindow || waWindow.closed || typeof waWindow.closed === 'undefined') {
-      const a = document.createElement('a');
-      a.href = waUrl;
-      a.target = '_blank';
-      a.rel = 'noopener noreferrer';
-      a.click();
-    }
+    let textMessage = '';
 
     try {
-      // 2. Gera o blob binário do PDF e inicia o download para anexar no WhatsApp
+      // 1. Gera o blob binário oficial do PDF
       const pdfBlob = await getQuotePdfBlob({
-        order: activeOrder,
+        order,
         customer,
         parts,
         filaments,
-        settings
+        settings,
+        includePaymentInfo
       });
 
-      const url = URL.createObjectURL(pdfBlob);
+      // 2. Faz o upload na nuvem para gerar o link público de acesso direto
+      let onlineUrl: string | null = null;
+      try {
+        onlineUrl = await uploadQuotePdfToStorage({
+          order,
+          customer,
+          parts,
+          filaments,
+          settings,
+          includePaymentInfo
+        });
+        if (onlineUrl) {
+          setLastPdfUrl(onlineUrl);
+        }
+      } catch (uploadErr) {
+        console.warn('Upload de PDF online não concluído:', uploadErr);
+      }
+
+      // 3. Monta a mensagem incluindo o link direto caso disponível
+      const docLinkText = onlineUrl 
+        ? `\n\n📄 *Visualizar / Baixar PDF Oficial:* \n${onlineUrl}\n`
+        : `\n\n📄 *Documento Oficial em PDF:* Anexo a esta conversa.\n`;
+
+      if (includePaymentInfo) {
+        let pixPaymentText = '';
+        if (business.pixKey) {
+          pixPaymentText = `\n*DADOS PARA PAGAMENTO PIX:*\n` +
+            `🔑 Chave Pix: *${business.pixKey}*` + (business.pixKeyType ? ` (${business.pixKeyType.toUpperCase()})` : '') + `\n` +
+            (business.pixReceiverName ? `👤 Favorecido: ${business.pixReceiverName}\n` : '') +
+            (business.pixBank ? `🏦 Banco: ${business.pixBank}\n` : '') +
+            `💰 Valor a Pagar: *${formatCurrency(total)}*\n`;
+        }
+
+        textMessage = 
+          `Olá ${customer?.name || 'Cliente'}! Segue o documento de confirmação do pedido da *${companyName}*:\n\n` +
+          `*Pedido:* ${orderNumStr}\n` +
+          `*Data:* ${emissionDate}\n` +
+          `*Status:* ${isPaid ? 'Pago' : 'Aprovado / Em Produção'}\n\n` +
+          `*Itens:* \n${itemsSummary}\n\n` +
+          (discount > 0 ? `*Desconto Aplicado:* -${formatCurrency(discount)}\n` : '') +
+          `*VALOR TOTAL:* ${formatCurrency(total)}\n` +
+          pixPaymentText +
+          docLinkText +
+          `O documento oficial em PDF com QR Code Pix para pagamento e especificações completas está anexo. Qualquer dúvida estamos à disposição!`;
+      } else {
+        textMessage = 
+          `Olá ${customer?.name || 'Cliente'}! Segue a proposta comercial de orçamento da *${companyName}*:\n\n` +
+          `*Orçamento:* ${orderNumStr}\n` +
+          `*Data de Emissão:* ${emissionDate} (Validade: 15 dias úteis)\n\n` +
+          `*Itens:* \n${itemsSummary}\n\n` +
+          (discount > 0 ? `*Desconto Aplicado:* -${formatCurrency(discount)}\n` : '') +
+          `*VALOR TOTAL:* ${formatCurrency(total)}\n\n` +
+          `*Condição Comercial:* Proposta sujeita à sua aprovação. Sem cobrança ou pagamento imediato.\n` +
+          docLinkText +
+          `O documento oficial em PDF com especificações técnicas completas está anexo. Ficamos à disposição para quaisquer dúvidas ou ajustes!`;
+      }
+
+      // 4. Compartilhamento Nativo com Arquivo (Web Share API)
+      // Em celulares Android, iPhone/iPad e navegadores com suporte, isso envia o ARQUIVO PDF físico diretamente para o WhatsApp!
+      const pdfFile = new File([pdfBlob], filename, { type: 'application/pdf' });
+      if (typeof navigator !== 'undefined' && navigator.canShare && navigator.canShare({ files: [pdfFile] })) {
+        try {
+          await navigator.share({
+            title: `${companyName} - ${filename}`,
+            text: textMessage,
+            files: [pdfFile]
+          });
+          setWhatsAppNotice(
+            `Arquivo PDF oficial (${filename}) compartilhado com sucesso diretamente no WhatsApp!`
+          );
+          setIsSharingWhatsApp(false);
+          return;
+        } catch (shareErr: any) {
+          if (shareErr.name === 'AbortError') {
+            setIsSharingWhatsApp(false);
+            return;
+          }
+          console.warn('Compartilhamento nativo não finalizado, abrindo WhatsApp Web:', shareErr);
+        }
+      }
+
+      // 5. Fallback para Desktop (WhatsApp Web)
+      // Como o protocolo web wa.me não aceita injeção direta de arquivos por segurança do navegador,
+      // baixamos o PDF oficial para o computador e abrimos a conversa com o link oficial na mensagem.
+      const blobUrl = URL.createObjectURL(pdfBlob);
       const link = document.createElement('a');
-      link.href = url;
+      link.href = blobUrl;
       link.download = filename;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 2000);
+
+      const encodedText = encodeURIComponent(textMessage);
+      const waUrl = phone ? `https://wa.me/55${phone}?text=${encodedText}` : `https://wa.me/?text=${encodedText}`;
+      const waWindow = window.open(waUrl, '_blank');
+      if (!waWindow || waWindow.closed || typeof waWindow.closed === 'undefined') {
+        const a = document.createElement('a');
+        a.href = waUrl;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        a.click();
+      }
 
       setWhatsAppNotice(
-        `Conversa do WhatsApp aberta e PDF (${filename}) baixado com sucesso! Basta arrastar o arquivo PDF baixado para a conversa ou clicar no ícone de anexo (📎) para enviar.`
+        onlineUrl
+          ? `Conversa do WhatsApp aberta com o link de acesso ao PDF! O arquivo (${filename}) também foi baixado no seu computador. No WhatsApp Web, para enviar o documento físico, basta arrastá-lo para a conversa ou clicar em Anexo (📎) > Documento.`
+          : `Conversa do WhatsApp aberta e arquivo (${filename}) baixado com sucesso! No WhatsApp Web, basta arrastar o arquivo para a conversa ou clicar em Anexo (📎) > Documento para enviar o PDF.`
       );
     } catch (err: any) {
-      console.warn('Aviso no fluxo do WhatsApp ao gerar PDF:', err);
-      try {
-        await downloadQuotePdf({ order: activeOrder, customer, parts, filaments, settings });
-      } catch (fallbackErr) {
-        console.warn('Fallback de download falhou:', fallbackErr);
-      }
-      setWhatsAppNotice(
-        `Conversa do WhatsApp aberta com o orçamento! Se o arquivo não baixou automaticamente, clique no botão "Baixar PDF" acima.`
-      );
+      console.error('Aviso ao preparar PDF para WhatsApp:', err);
+      // Fallback seguro de emergência
+      const fallbackMsg = `Olá! Segue o documento referente ao pedido ${orderNumStr} da ${companyName}.`;
+      const fallbackUrl = phone ? `https://wa.me/55${phone}?text=${encodeURIComponent(fallbackMsg)}` : `https://wa.me/?text=${encodeURIComponent(fallbackMsg)}`;
+      window.open(fallbackUrl, '_blank');
+      setWhatsAppNotice('Conversa aberta no WhatsApp! Se o arquivo não baixou automaticamente, clique no botão "Baixar PDF" acima.');
     } finally {
       setIsSharingWhatsApp(false);
     }
@@ -259,13 +280,17 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
         {/* Barra Superior / Ações */}
         <div className="p-4 sm:p-5 border-b border-zinc-800 bg-zinc-900/95 flex flex-wrap items-center justify-between gap-3 sticky top-0 z-20">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center">
+            <div className={`w-10 h-10 rounded-xl border flex items-center justify-center ${
+              includePaymentInfo
+                ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400'
+                : 'bg-blue-500/15 border-blue-500/30 text-blue-400'
+            }`}>
               <FileText className="w-5 h-5" />
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="font-black text-sm sm:text-base text-zinc-100 uppercase tracking-tight">
-                  Proposta Técnica & Orçamento Comercial
+                  {includePaymentInfo ? 'Pedido de Produção & Pagamento Pix' : 'Proposta Técnica & Orçamento Comercial'}
                 </h3>
                 <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-zinc-800 text-emerald-400">
                   {orderNumStr}
@@ -278,6 +303,21 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
+            {/* Botão de Alternância de Dados de Pagamento Pix */}
+            <button
+              type="button"
+              onClick={() => setIncludePaymentInfo(!includePaymentInfo)}
+              className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all border shadow-xs cursor-pointer ${
+                includePaymentInfo
+                  ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300 ring-1 ring-emerald-500/30'
+                  : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:text-zinc-200'
+              }`}
+              title="Ativar ou ocultar dados bancários e QR Code Pix no PDF"
+            >
+              <QrCode className="w-3.5 h-3.5 text-emerald-400" />
+              <span>{includePaymentInfo ? 'Pix Ativo no PDF' : 'Ativar Pix no PDF'}</span>
+            </button>
+
             <button
               onClick={handleDownload}
               disabled={isGenerating}
@@ -318,7 +358,7 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
               onClick={handleSendWhatsAppPdf}
               disabled={isSharingWhatsApp}
               className="px-3.5 py-2.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-bold text-xs flex items-center gap-2 transition-all active:scale-95 shadow-xs"
-              title="Enviar PDF no WhatsApp (anexa o arquivo direto no celular ou baixa e abre a conversa no PC)"
+              title="Enviar PDF no WhatsApp"
             >
               {isSharingWhatsApp ? (
                 <>
@@ -328,7 +368,7 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
               ) : (
                 <>
                   <MessageCircle className="w-4 h-4 text-emerald-400" />
-                  <span>Enviar PDF no WhatsApp</span>
+                  <span>Enviar no WhatsApp</span>
                 </>
               )}
             </button>
@@ -342,110 +382,66 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
           </div>
         </div>
 
-        {/* Barra de Seleção / Confirmação da Forma de Pagamento no PDF */}
+        {/* Barra Informativa do Modo Atual */}
         <div className="px-4 py-2.5 bg-zinc-950/80 border-b border-zinc-800 flex items-center justify-between flex-wrap gap-2 text-xs">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[11px] font-bold text-zinc-400">Forma de Pagamento no PDF:</span>
-            <div className="flex items-center gap-1 bg-zinc-900 p-1 rounded-xl border border-zinc-800">
-              <button
-                type="button"
-                onClick={() => handleSelectPaymentMethod(PaymentMethod.PIX)}
-                className={`px-3 py-1 rounded-lg font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer ${
-                  isPixPaymentMethod(currentPaymentMethod)
-                    ? 'bg-emerald-500 text-zinc-950 font-black shadow-sm'
-                    : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
-                }`}
-                title="Incluir dados Pix e QR Code no PDF"
-              >
-                <QrCode className="w-3.5 h-3.5" />
-                <span>Pix</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleSelectPaymentMethod(PaymentMethod.CARD)}
-                className={`px-3 py-1 rounded-lg font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer ${
-                  (currentPaymentMethod === PaymentMethod.CARD || currentPaymentMethod?.toLowerCase().includes('cart'))
-                    ? 'bg-blue-500 text-white font-black shadow-sm'
-                    : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
-                }`}
-                title="Definir Cartão no PDF (oculta seção Pix)"
-              >
-                <CreditCard className="w-3.5 h-3.5" />
-                <span>Cartão</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleSelectPaymentMethod(PaymentMethod.CASH)}
-                className={`px-3 py-1 rounded-lg font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer ${
-                  (currentPaymentMethod === PaymentMethod.CASH || currentPaymentMethod?.toLowerCase().includes('dinh'))
-                    ? 'bg-emerald-600 text-white font-black shadow-sm'
-                    : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
-                }`}
-                title="Definir Dinheiro no PDF (oculta seção Pix)"
-              >
-                <Banknote className="w-3.5 h-3.5" />
-                <span>Dinheiro</span>
-              </button>
-            </div>
-            {isUpdatingPayment && (
-              <span className="text-[10px] text-zinc-400 flex items-center gap-1">
-                <Loader2 className="w-3 h-3 animate-spin text-emerald-400" />
-                <span>Atualizando no pedido...</span>
-              </span>
-            )}
+            <span className={`w-2 h-2 rounded-full ${includePaymentInfo ? 'bg-emerald-400' : 'bg-amber-400'}`}></span>
+            <span className="text-[11px] font-bold text-zinc-200">
+              {includePaymentInfo ? 'Documento de Pedido com Dados Pix' : 'Orçamento Comercial Pré-Aprovação'}
+            </span>
+            <span className="text-[10px] text-zinc-500">•</span>
+            <span className="text-[10px] text-zinc-400">
+              {includePaymentInfo 
+                ? 'QR Code, Chave Pix e instruções de recebimento exibidos' 
+                : 'Sem vínculo de pagamento ou cobrança gerada • Sujeito à aprovação do cliente'}
+            </span>
           </div>
 
-          <span className="text-[11px] text-zinc-400 hidden sm:inline">
-            {isPixPaymentMethod(currentPaymentMethod)
-              ? '✅ Dados Pix e QR Code ativos no documento'
-              : 'ℹ️ Seção Pix ocultada para esta modalidade'}
+          <span className="text-[11px] font-mono font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/20">
+            {includePaymentInfo ? (isPaid ? 'Situação: Pago' : 'Situação: Aprovado') : `Validade: 15 dias (${validityInfo.short})`}
           </span>
         </div>
 
-        {/* Aviso de Dados Pix Ausentes quando o pedido é Pix */}
-        {isPix && !hasPixConfigured && (
-          <div className="bg-amber-500/15 border-b border-amber-500/30 p-3.5 px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-200 animate-in fade-in">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center flex-shrink-0">
-                <AlertTriangle className="w-4 h-4" />
-              </div>
-              <div>
-                <strong className="block font-bold text-amber-300">Dados Pix não cadastrados:</strong>
-                <p className="leading-snug text-[11px] text-zinc-300">
-                  A forma de pagamento deste pedido é <strong>Pix</strong>, mas a chave Pix da Print_3Dbr ainda não foi cadastrada nas Configurações.
-                </p>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={handleGoToSettings}
-              className="px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-zinc-950 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-all self-start sm:self-auto flex-shrink-0 cursor-pointer shadow-md"
-            >
-              <SettingsIcon className="w-4 h-4" />
-              <span>Cadastrar Chave Pix Agora</span>
-            </button>
-          </div>
-        )}
-
         {/* Banner Informativo quando o WhatsApp e download são acionados */}
         {whatsAppNotice && (
-          <div className="bg-emerald-950/90 border-b border-emerald-500/30 p-3.5 px-6 flex items-center justify-between gap-3 text-xs text-emerald-200 animate-in fade-in slide-in-from-top-1">
-            <div className="flex items-center gap-2.5">
-              <div className="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center flex-shrink-0">
+          <div className="bg-emerald-950/90 border-b border-emerald-500/30 p-3.5 px-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-emerald-200 animate-in fade-in slide-in-from-top-1">
+            <div className="flex items-start gap-2.5">
+              <div className="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center flex-shrink-0 mt-0.5 sm:mt-0">
                 <CheckCircle2 className="w-4 h-4" />
               </div>
-              <p className="leading-snug">
-                {whatsAppNotice}
-              </p>
+              <div className="space-y-1">
+                <p className="leading-snug font-medium text-emerald-100">
+                  {whatsAppNotice}
+                </p>
+                {lastPdfUrl && (
+                  <p className="text-[11px] text-emerald-300/80 font-mono break-all">
+                    Link do PDF: <span className="underline select-all">{lastPdfUrl}</span>
+                  </p>
+                )}
+              </div>
             </div>
-            <button
-              onClick={() => setWhatsAppNotice(null)}
-              className="p-1 rounded-lg hover:bg-emerald-900/60 text-emerald-400 hover:text-emerald-100 flex-shrink-0"
-            >
-              <X className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+              {lastPdfUrl && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(lastPdfUrl);
+                    setCopiedLink(true);
+                    setTimeout(() => setCopiedLink(false), 2500);
+                  }}
+                  className="px-2.5 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-bold text-xs flex items-center gap-1.5 transition cursor-pointer"
+                >
+                  {copiedLink ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedLink ? 'Link Copiado!' : 'Copiar Link'}</span>
+                </button>
+              )}
+              <button
+                onClick={() => setWhatsAppNotice(null)}
+                className="p-1 rounded-lg hover:bg-emerald-900/60 text-emerald-400 hover:text-emerald-100 flex-shrink-0 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         )}
 
@@ -501,10 +497,10 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
                 </p>
               </div>
 
-              {/* Caixa Escura de Número e Validade (#0B0F19) */}
+              {/* Caixa Escura de Número e Validade/Situação (#0B0F19) */}
               <div className="bg-slate-950 text-white rounded-xl p-3 sm:text-right min-w-[210px] space-y-1.5 shadow-md">
                 <div className="flex items-center justify-between text-[10px] font-mono pb-1 border-b border-slate-800">
-                  <span className="text-slate-400">ORÇAMENTO Nº</span>
+                  <span className="text-slate-400">{includePaymentInfo ? 'PEDIDO Nº' : 'ORÇAMENTO Nº'}</span>
                   <strong className="text-emerald-400 text-xs tracking-wider">{orderNumStr}</strong>
                 </div>
                 <div className="flex justify-between items-center text-[10px] pt-0.5">
@@ -512,9 +508,13 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
                   <span className="font-bold text-slate-200">{emissionDate}</span>
                 </div>
                 <div className="flex justify-between items-center text-[10px]">
-                  <span className="text-slate-400">VALIDADE:</span>
+                  <span className="text-slate-400">{includePaymentInfo ? 'SITUAÇÃO:' : 'VALIDADE:'}</span>
                   <span className="font-bold text-slate-200">
-                    15 dias <span className="text-emerald-400">({validityInfo.short})</span>
+                    {includePaymentInfo ? (
+                      <span className="text-emerald-400">{isPaid ? 'Pago' : 'Aprovado'}</span>
+                    ) : (
+                      <>15 dias <span className="text-emerald-400">({validityInfo.short})</span></>
+                    )}
                   </span>
                 </div>
               </div>
@@ -532,7 +532,7 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
                     </h4>
                   </div>
                   <span className="text-[9px] font-medium px-2 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">
-                    Proposta Comercial
+                    {includePaymentInfo ? 'Pedido em Produção' : 'Proposta Comercial'}
                   </span>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[11px] pt-1">
@@ -560,22 +560,26 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[9px] font-black uppercase tracking-wider text-emerald-400">
-                      Proposta Técnica
+                      {includePaymentInfo ? 'Ordem de Produção' : 'Proposta Técnica'}
                     </span>
                     <span className="text-[8px] font-mono px-1.5 py-0.2 rounded bg-slate-800 text-slate-300">
                       {order.items?.length || 0} {(order.items?.length || 0) === 1 ? 'ITEM' : 'ITENS'}
                     </span>
                   </div>
                   <h2 className="text-base font-black text-white tracking-tight">
-                    ORÇAMENTO COMERCIAL
+                    {includePaymentInfo ? 'PEDIDO & PRODUÇÃO' : 'ORÇAMENTO COMERCIAL'}
                   </h2>
                   <p className="text-[10px] text-slate-400 leading-snug pt-0.5">
-                    Itens personalizados sob demanda conforme especificações digitais aprovadas.
+                    {includePaymentInfo
+                      ? 'Pedido aprovado para fabricação sob demanda dos itens conforme parâmetros validados.'
+                      : 'Itens personalizados sob demanda conforme especificações digitais aprovadas.'}
                   </p>
                 </div>
                 <div className="border-l-2 border-emerald-500 pl-2 py-0.5 mt-1">
                   <p className="text-[9.5px] italic text-slate-300 leading-tight">
-                    Precisão nos detalhes e qualidade em cada camada.
+                    {includePaymentInfo 
+                      ? 'Produção autorizada com rigor técnico e qualidade.' 
+                      : 'Precisão nos detalhes e qualidade em cada camada.'}
                   </p>
                 </div>
               </div>
@@ -692,8 +696,12 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
                       <strong className="text-slate-800 font-bold text-[11px]">A combinar</strong>
                     </div>
                     <div className="bg-white border border-slate-200 rounded-lg p-2 shadow-xs">
-                      <span className="block text-[8px] font-bold text-slate-400 uppercase">Forma de Pagamento:</span>
-                      <strong className="text-slate-800 font-bold text-[11px] truncate block">{currentPaymentMethod || 'A combinar'}</strong>
+                      <span className="block text-[8px] font-bold text-slate-400 uppercase">
+                        {includePaymentInfo ? 'Situação do Pedido:' : 'Condição Comercial:'}
+                      </span>
+                      <strong className="text-slate-800 font-bold text-[11px] truncate block">
+                        {includePaymentInfo ? (isPaid ? 'Pago / Liberado' : 'Aprovado / Em Produção') : 'Sujeita à Aprovação'}
+                      </strong>
                     </div>
                     <div className="col-span-2 bg-white border border-slate-200 rounded-lg p-2 shadow-xs">
                       <span className="block text-[8px] font-bold text-slate-400 uppercase">Entrega / Retirada:</span>
@@ -717,7 +725,7 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
                     Resumo Financeiro
                   </h4>
                   <span className="text-[8.5px] font-mono text-slate-400">
-                    PROPOSTA {orderNumStr}
+                    {includePaymentInfo ? 'PEDIDO' : 'PROPOSTA'} {orderNumStr}
                   </span>
                 </div>
 
@@ -749,7 +757,9 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
                         Valor Total:
                       </span>
                       <span className="text-[8.5px] text-emerald-400">
-                        {discount > 0 ? 'Com desconto aplicado' : 'Valor final do pedido'}
+                        {includePaymentInfo 
+                          ? (isPaid ? 'Pagamento confirmado em caixa' : 'Aguardando pagamento via Pix')
+                          : (discount > 0 ? 'Com desconto aplicado' : 'Orçamento sujeito à aprovação')}
                       </span>
                     </div>
                     <span className="text-2xl font-black font-mono text-white tracking-tight">
@@ -760,106 +770,92 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
               </div>
             </div>
 
-            {/* 5.3 SEÇÃO: DADOS PARA PAGAMENTO VIA PIX (EXIBIDA APENAS SE FORMA DE PAGAMENTO FOR PIX) */}
-            {isPix && (
-              <div className="bg-slate-50 border-2 border-emerald-500/70 rounded-xl p-4 mb-6 shadow-xs">
-                <div className="flex items-center justify-between pb-2 mb-3 border-b border-slate-200 flex-wrap gap-2">
+            {/* 5.3 SEÇÃO: DADOS PARA PAGAMENTO PIX (QUANDO ATIVO) OU TERMO INFORMATIVO (QUANDO ORÇAMENTO) */}
+            {includePaymentInfo ? (
+              <div className="bg-emerald-50/50 border border-emerald-200 rounded-xl p-4 mb-6 shadow-xs">
+                <div className="flex items-center justify-between pb-2 mb-2.5 border-b border-emerald-200 flex-wrap gap-2">
                   <div className="flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
                     <h4 className="text-[11px] font-black uppercase tracking-wider text-slate-900">
-                      Dados para Pagamento via Pix
+                      Dados para Pagamento via Pix (Banco Central do Brasil)
                     </h4>
-                    <span className="text-[8.5px] font-bold uppercase px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
-                      Banco Central do Brasil
+                    <span className={`text-[8.5px] font-bold uppercase px-2 py-0.5 rounded border ${
+                      isPaid 
+                        ? 'bg-emerald-100 text-emerald-800 border-emerald-300' 
+                        : 'bg-teal-50 text-teal-800 border-teal-200'
+                    }`}>
+                      {isPaid ? 'Pagamento Confirmado (Pago)' : 'Aguardando Pagamento Pix'}
                     </span>
                   </div>
-                  <span className="text-[10px] font-mono font-bold text-emerald-700">
-                    Liquidação Imediata
+                  <span className="text-[10px] font-mono font-bold text-emerald-800">
+                    Total: {formatCurrency(total)}
                   </span>
                 </div>
 
-                {hasPixConfigured ? (
-                  <div className="flex flex-col sm:flex-row items-start justify-between gap-4">
-                    <div className="space-y-2.5 flex-1 text-[11px] w-full">
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                        <div className="bg-white border border-slate-200 rounded-lg p-2.5">
-                          <span className="block text-[8px] font-bold text-slate-400 uppercase">Valor do Pedido:</span>
-                          <strong className="text-emerald-700 font-mono font-black text-sm block">
-                            {formatCurrency(total)}
-                          </strong>
-                        </div>
-                        <div className="bg-white border border-slate-200 rounded-lg p-2.5">
-                          <span className="block text-[8px] font-bold text-slate-400 uppercase">Tipo de Chave:</span>
-                          <strong className="text-slate-800 font-bold text-xs block">
-                            {getPixKeyTypeLabel(business.pixKeyType)}
-                          </strong>
-                        </div>
-                        <div className="bg-white border border-slate-200 rounded-lg p-2.5 sm:col-span-1">
-                          <span className="block text-[8px] font-bold text-slate-400 uppercase">Chave Pix Completa:</span>
-                          <strong className="text-slate-950 font-mono font-bold text-xs block break-all">
-                            {formatPixKeyForDisplay(business.pixKey || '', business.pixKeyType || 'cpf')}
-                          </strong>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-0.5">
-                        <div className="bg-white border border-slate-200 rounded-lg p-2.5 sm:col-span-2">
-                          <span className="block text-[8px] font-bold text-slate-400 uppercase">Nome do Titular:</span>
-                          <strong className="text-slate-900 font-bold text-xs block truncate">
-                            {(business.pixReceiverName || companyName).toUpperCase()}
-                          </strong>
-                          {business.pixReceiverDoc && (
-                            <span className="text-[9px] text-slate-500 block pt-0.5">Doc: {business.pixReceiverDoc}</span>
-                          )}
-                        </div>
-                        <div className="bg-white border border-slate-200 rounded-lg p-2.5">
-                          <span className="block text-[8px] font-bold text-slate-400 uppercase">Instituição Financeira:</span>
-                          <strong className="text-slate-800 font-bold text-xs block truncate">
-                            {business.pixBank || 'Não informada'}
-                          </strong>
-                        </div>
-                      </div>
-
-                      <p className="text-[9.5px] italic text-slate-500 pt-1 leading-snug">
-                        ℹ️ Abra o aplicativo do seu banco, escolha <strong>Pix &gt; Ler QR Code</strong> ou use a chave Pix acima para efetuar o pagamento.
-                      </p>
+                <div className="flex flex-col sm:flex-row items-center gap-4">
+                  {pixPreview?.qrCodeDataUrl ? (
+                    <div className="w-24 h-24 bg-white p-1 rounded-lg border border-emerald-200 flex-shrink-0 shadow-xs flex items-center justify-center">
+                      <img src={pixPreview.qrCodeDataUrl} alt="QR Code Pix" className="w-full h-full object-contain" />
                     </div>
+                  ) : (
+                    <div className="w-24 h-24 bg-emerald-100/60 rounded-lg border border-emerald-200 flex-shrink-0 flex items-center justify-center text-emerald-700">
+                      <QrCode className="w-8 h-8 opacity-70" />
+                    </div>
+                  )}
 
-                    {/* QR Code Container */}
-                    <div className="bg-white border border-slate-200 rounded-xl p-2.5 flex flex-col items-center justify-center shadow-xs flex-shrink-0 self-center sm:self-start">
-                      {pixQrCodeUrl ? (
-                        <img 
-                          src={pixQrCodeUrl} 
-                          alt="QR Code Pix" 
-                          className="w-24 h-24 object-contain"
-                        />
-                      ) : (
-                        <div className="w-24 h-24 bg-slate-100 rounded-lg flex items-center justify-center text-slate-400">
-                          <QrCode className="w-10 h-10 animate-pulse text-emerald-600" />
-                        </div>
-                      )}
-                      <span className="text-[8px] font-mono font-bold text-slate-500 uppercase mt-1">
-                        QR Code BACEN
+                  <div className="flex-1 space-y-1.5 text-[11px]">
+                    <div>
+                      <span className="text-[9px] font-bold uppercase text-slate-500 block">
+                        Chave Pix {business.pixKeyType ? `(${business.pixKeyType.toUpperCase()})` : ''}:
+                      </span>
+                      <span className="font-mono font-bold text-slate-900 text-xs bg-white px-2.5 py-1 rounded border border-slate-200 inline-block shadow-xs">
+                        {pixPreview?.formattedKey || business.pixKey || 'Chave Pix a combinar com a oficina'}
                       </span>
                     </div>
-                  </div>
-                ) : (
-                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-amber-800 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div className="space-y-0.5">
-                      <strong className="block text-amber-900 font-bold">Chave Pix pendente de cadastro</strong>
-                      <p className="text-[11px] text-amber-700">
-                        Os dados Pix da Print_3Dbr não foram encontrados. Cadastre a chave nas Configurações para vinculá-la automaticamente ao pedido.
-                      </p>
+
+                    <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-slate-600 text-[10.5px]">
+                      {business.pixReceiverName && (
+                        <span>Favorecido: <strong>{business.pixReceiverName}</strong></span>
+                      )}
+                      {business.pixBank && (
+                        <span>Banco: <strong>{business.pixBank}</strong></span>
+                      )}
                     </div>
-                    <button
-                      type="button"
-                      onClick={handleGoToSettings}
-                      className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-bold text-[11px] flex-shrink-0 cursor-pointer self-start sm:self-auto"
-                    >
-                      Configurar Agora
-                    </button>
+
+                    <p className="text-[9.5px] text-slate-500 pt-0.5">
+                      Abra o app do seu banco, escolha <strong>Pix &gt; Ler QR Code</strong> ou <strong>Copia e Cola</strong> com a chave acima. Após o pagamento, envie o comprovante.
+                    </p>
                   </div>
-                )}
+                </div>
+              </div>
+            ) : (
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-6 shadow-xs">
+                <div className="flex items-center justify-between pb-2 mb-2.5 border-b border-slate-200 flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                    <h4 className="text-[11px] font-black uppercase tracking-wider text-slate-900">
+                      Informações Comerciais & Validade do Orçamento
+                    </h4>
+                    <span className="text-[8.5px] font-bold uppercase px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                      Proposta Informativa
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-mono font-bold text-slate-500">
+                    Validade: 15 dias úteis ({validityInfo.short})
+                  </span>
+                </div>
+
+                <div className="space-y-1.5 text-[10.5px] text-slate-600 leading-relaxed">
+                  <p>
+                    • Este documento constitui um orçamento prévio exclusivamente comercial e informativo, emitido para conhecimento dos custos e especificações técnicas dos serviços de manufatura aditiva 3D solicitados.
+                  </p>
+                  <p>
+                    • A emissão desta proposta <strong>não gera cobrança, débito pendente nem alteração de caixa</strong>. O documento informa apenas os preços estimados do serviço.
+                  </p>
+                  <p>
+                    • Proposta comercial <strong>sujeita à aprovação formal do cliente</strong>. O início da produção e a definição das condições de pagamento ocorrerão após o aceite formal.
+                  </p>
+                </div>
               </div>
             )}
 

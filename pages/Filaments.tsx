@@ -282,7 +282,7 @@ const Filaments: React.FC = () => {
 
       let result;
       if (editingFilament.id) {
-        result = await supabase.from('filaments').update(payload).eq('id', editingFilament.id);
+        result = await supabase.from('filaments').update(payload).eq('id', editingFilament.id).eq('user_id', user.id);
       } else {
         result = await supabase.from('filaments').insert([{ ...payload, createdAt: new Date().toISOString() }]);
       }
@@ -300,13 +300,13 @@ const Filaments: React.FC = () => {
   };
 
   const confirmDeleteFilament = async () => {
-    if (!deleteTarget) return;
+    if (!deleteTarget || !user) return;
     setIsDeleting(true);
     const idToDelete = deleteTarget.id;
     try {
       // Atualização otimista imediata para resposta instantânea na interface
       setFilaments(filaments.filter(f => f.id !== idToDelete));
-      const { error } = await supabase.from('filaments').delete().eq('id', idToDelete);
+      const { error } = await supabase.from('filaments').delete().eq('id', idToDelete).eq('user_id', user.id);
       if (error) {
         throw error;
       }

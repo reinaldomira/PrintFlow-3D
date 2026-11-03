@@ -130,7 +130,7 @@ export const Customers: React.FC = () => {
 
       let result;
       if (editingCustomer.id) {
-        result = await supabase.from('customers').update(payload).eq('id', editingCustomer.id);
+        result = await supabase.from('customers').update(payload).eq('id', editingCustomer.id).eq('user_id', user.id);
       } else {
         result = await supabase.from('customers').insert([{ ...payload, createdAt: new Date().toISOString() }]);
       }
@@ -159,7 +159,7 @@ export const Customers: React.FC = () => {
   };
 
   const confirmDeleteCustomer = async () => {
-    if (!deleteTarget) return;
+    if (!deleteTarget || !user) return;
     setIsDeleting(true);
     const idToDelete = deleteTarget.id;
 
@@ -169,7 +169,7 @@ export const Customers: React.FC = () => {
       if (selectedCustomer?.id === idToDelete) {
         setSelectedCustomer(null);
       }
-      const { error } = await supabase.from('customers').delete().eq('id', idToDelete);
+      const { error } = await supabase.from('customers').delete().eq('id', idToDelete).eq('user_id', user.id);
       if (error) throw error;
 
       setActionNotice({ type: 'success', message: 'Cliente excluído com sucesso!' });

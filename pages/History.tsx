@@ -8,7 +8,7 @@ import { Archive, Search, Trash2, Calendar, ShoppingBag, RotateCcw, CheckCircle2
 import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 
 export const History: React.FC = () => {
-  const { orders, setOrders, refreshData, customers, parts } = useApp();
+  const { orders, setOrders, refreshData, customers, parts, user } = useApp();
   const [searchTerm, setSearchTerm] = useState('');
   
   // Confirmações sem bloqueio de janela (substitui window.confirm e window.alert)
@@ -29,7 +29,7 @@ export const History: React.FC = () => {
   }, [orders, customers, searchTerm]);
 
   const confirmRevertStatus = async () => {
-    if (!revertTarget) return;
+    if (!revertTarget || !user) return;
     setIsReverting(true);
     const idToRevert = revertTarget.id;
     const code = revertTarget.code;
@@ -37,7 +37,7 @@ export const History: React.FC = () => {
     try {
       // Atualização otimista
       setOrders(orders.map(o => o.id === idToRevert ? { ...o, status: OrderStatus.PRODUCTION } : o));
-      const { error } = await supabase.from('orders').update({ status: OrderStatus.PRODUCTION }).eq('id', idToRevert);
+      const { error } = await supabase.from('orders').update({ status: OrderStatus.PRODUCTION }).eq('id', idToRevert).eq('user_id', user.id);
       if (error) throw error;
 
       setActionNotice({ type: 'success', message: `Pedido #${code} reaberto e movido para a fila de Produção!` });
@@ -54,7 +54,7 @@ export const History: React.FC = () => {
   };
 
   const confirmDeleteOrder = async () => {
-    if (!deleteTarget) return;
+    if (!deleteTarget || !user) return;
     setIsDeleting(true);
     const idToDelete = deleteTarget.id;
     const code = deleteTarget.code;
@@ -62,7 +62,7 @@ export const History: React.FC = () => {
     try {
       // Atualização otimista
       setOrders(orders.filter(o => o.id !== idToDelete));
-      const { error } = await supabase.from('orders').delete().eq('id', idToDelete);
+      const { error } = await supabase.from('orders').delete().eq('id', idToDelete).eq('user_id', user.id);
       if (error) throw error;
 
       setActionNotice({ type: 'success', message: `Pedido #${code} excluído do histórico com sucesso!` });
