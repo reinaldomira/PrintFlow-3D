@@ -117,68 +117,9 @@ export function isSchemaError(msg: unknown, code?: string): boolean {
   );
 }
 
-export const EXT_SYNC_PREFIX = '__PRINTFLOW_EXT_SYNC__:';
-
-/**
- * Extrai configurações estendidas (dados comerciais, custos horários, etc.)
- * que foram embutidas de forma resiliente no array de categorias para sincronização
- * transparente e imediata entre celular e computador sem exigir migração SQL.
- */
-export function extractCarrierData(categories?: string[] | null): {
-  cleanCategories: string[];
-  extData: any | null;
-} {
-  if (!Array.isArray(categories)) {
-    return { cleanCategories: [], extData: null };
-  }
-  const cleanCategories: string[] = [];
-  let extData: any = null;
-
-  for (const item of categories) {
-    if (typeof item === 'string' && item.startsWith(EXT_SYNC_PREFIX)) {
-      try {
-        const jsonStr = item.slice(EXT_SYNC_PREFIX.length);
-        extData = JSON.parse(jsonStr);
-      } catch (err) {
-        console.warn('Erro ao decodificar carrier de configurações:', err);
-      }
-    } else if (typeof item === 'string' && item.trim() !== '') {
-      cleanCategories.push(item);
-    }
-  }
-
-  return { cleanCategories, extData };
-}
-
-/**
- * Serializa dados comerciais e configurações estendidas dentro do array de categorias
- * para garantir sincronização na nuvem em qualquer banco Supabase.
- */
-export function embedCarrierInCategories(categories: string[] | undefined, settings: Settings): string[] {
-  const clean = (categories || []).filter(c => typeof c === 'string' && !c.startsWith(EXT_SYNC_PREFIX));
-
-  const extPayload = {
-    businessInfo: settings.businessInfo || {},
-    hourlyLaborRate: settings.hourlyLaborRate,
-    hourlyMaintenanceCost: settings.hourlyMaintenanceCost,
-    defaultPackagingCost: settings.defaultPackagingCost,
-    defaultOtherCosts: settings.defaultOtherCosts,
-    defaultPaymentFeePercent: settings.defaultPaymentFeePercent,
-    defaultMarketplaceFeePercent: settings.defaultMarketplaceFeePercent,
-    defaultTaxPercent: settings.defaultTaxPercent,
-    autoRefreshOrders: settings.autoRefreshOrders,
-    filamentBrands: settings.filamentBrands || [],
-    updatedAt: new Date().toISOString()
-  };
-
-  const carrierItem = EXT_SYNC_PREFIX + JSON.stringify(extPayload);
-  return [...clean, carrierItem];
-}
-
 /**
  * Converte registro snake_case do Supabase para o formato TypeScript Settings (camelCase).
- * Suporta colunas nativas e o envelope de sincronização (carrier) embutido,
- * garantindo compatibilidade total e imediata entre dispositivos móveis e web.
+ * Lê apenas das colunas reais em snake_case.
  */
 export function rowToSettings(
   row: Record<string, any> | null | undefined,
@@ -186,149 +127,90 @@ export function rowToSettings(
 ): Settings {
   if (!row) return { ...fallbackSettings };
 
-  // 1. Extrai dados do carrier embutido em categories se houver
-  const { cleanCategories, extData } = extractCarrierData(row.categories);
+  const legacyCarrierPrefix = ['__PRINTFLOW', 'EXT', 'SYNC__:'].join('_');
+  const cleanCategories = Array.isArray(row.categories)
+    ? row.categories.filter((c: any) => typeof c === 'string' && !c.startsWith(legacyCarrierPrefix) && c.trim() !== '')
+    : [];
 
-  // 2. Determina businessInfo da nuvem:
-  // Prioridade 1: coluna nativa business_info / businessInfo se tiver dados preenchidos
-  // Prioridade 2: carrier embutido no banco se tiver dados preenchidos
-  // Prioridade 3: fallbackSettings (cache local do dispositivo)
-  let cloudBusiness: BusinessInfo | undefined = undefined;
+  const businessInfo: BusinessInfo = (row.business_info && typeof row.business_info === 'object')
+    ? (row.business_info as BusinessInfo)
+    : (fallbackSettings.businessInfo || DEFAULT_SETTINGS.businessInfo || {});
 
-  const rawBusiness = (row.business_info && typeof row.business_info === 'object')
-    ? row.business_info
-    : (row.businessInfo && typeof row.businessInfo === 'object')
-      ? row.businessInfo
-      : undefined;
+  const defaultEnergyCost = typeof row.default_energy_cost === 'number'
+    ? row.default_energy_cost
+    : (fallbackSettings.defaultEnergyCost ?? DEFAULT_SETTINGS.defaultEnergyCost);
 
-  const hasRawData = rawBusiness && Object.values(rawBusiness).some(v => v !== null && v !== undefined && String(v).trim() !== '');
+  const defaultFilamentCost = typeof row.default_filament_cost === 'number'
+    ? row.default_filament_cost
+    : (fallbackSettings.defaultFilamentCost ?? DEFAULT_SETTINGS.defaultFilamentCost);
 
-  const carrierBusiness = extData?.businessInfo && typeof extData.businessInfo === 'object'
-    ? extData.businessInfo
-    : undefined;
-  const hasCarrierData = carrierBusiness && Object.values(carrierBusiness).some(v => v !== null && v !== undefined && String(v).trim() !== '');
+  const defaultProfitMargin = typeof row.default_profit_margin === 'number'
+    ? row.default_profit_margin
+    : (fallbackSettings.defaultProfitMargin ?? DEFAULT_SETTINGS.defaultProfitMargin);
 
-  if (hasRawData) {
-    cloudBusiness = rawBusiness;
-  } else if (hasCarrierData) {
-    cloudBusiness = carrierBusiness;
-  } else if (rawBusiness) {
-    cloudBusiness = rawBusiness;
-  } else if (carrierBusiness) {
-    cloudBusiness = carrierBusiness;
-  }
+  const hourlyLaborRate = typeof row.hourly_labor_rate === 'number'
+    ? row.hourly_labor_rate
+    : (fallbackSettings.hourlyLaborRate ?? DEFAULT_SETTINGS.hourlyLaborRate);
 
-  // Tenta também resgatar do cache isolado em localStorage se disponível
-  let legacyLocalBusiness: BusinessInfo | undefined = undefined;
-  try {
-    if (typeof localStorage !== 'undefined' && row.user_id) {
-      const stored = localStorage.getItem(`printflow_business_info_${row.user_id}`);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (parsed && Object.values(parsed).some(v => v && String(v).trim() !== '')) {
-          legacyLocalBusiness = parsed;
-        }
-      }
-    }
-  } catch (e) {}
+  const hourlyMaintenanceCost = typeof row.hourly_maintenance_cost === 'number'
+    ? row.hourly_maintenance_cost
+    : (fallbackSettings.hourlyMaintenanceCost ?? DEFAULT_SETTINGS.hourlyMaintenanceCost);
 
-  const resolvedBusiness: BusinessInfo = cloudBusiness !== undefined
-    ? cloudBusiness
-    : (fallbackSettings.businessInfo && Object.values(fallbackSettings.businessInfo).some(v => v && String(v).trim() !== '')
-      ? fallbackSettings.businessInfo
-      : (legacyLocalBusiness || fallbackSettings.businessInfo || DEFAULT_SETTINGS.businessInfo || {}));
+  const currency = String(row.currency || fallbackSettings.currency || DEFAULT_SETTINGS.currency);
 
-  // 3. Custos horários e taxas adicionais (suportando colunas nativas OU carrier OU fallback)
-  const hourlyLaborRate = Number(
-    row.hourly_labor_rate ?? 
-    row.hourlyLaborRate ?? 
-    extData?.hourlyLaborRate ?? 
-    fallbackSettings.hourlyLaborRate ?? 
-    DEFAULT_SETTINGS.hourlyLaborRate
-  );
+  const filamentBrands = (Array.isArray(row.filament_brands) && row.filament_brands.length > 0)
+    ? row.filament_brands
+    : (fallbackSettings.filamentBrands || DEFAULT_SETTINGS.filamentBrands);
 
-  const hourlyMaintenanceCost = Number(
-    row.hourly_maintenance_cost ?? 
-    row.hourlyMaintenanceCost ?? 
-    extData?.hourlyMaintenanceCost ?? 
-    fallbackSettings.hourlyMaintenanceCost ?? 
-    DEFAULT_SETTINGS.hourlyMaintenanceCost
-  );
+  const categories = cleanCategories.length > 0
+    ? cleanCategories
+    : (fallbackSettings.categories || DEFAULT_SETTINGS.categories);
 
-  const defaultPackagingCost = Number(
-    row.default_packaging_cost ?? 
-    row.defaultPackagingCost ?? 
-    extData?.defaultPackagingCost ?? 
-    fallbackSettings.defaultPackagingCost ?? 
-    DEFAULT_SETTINGS.defaultPackagingCost
-  );
+  const defaultPackagingCost = typeof row.default_packaging_cost === 'number'
+    ? row.default_packaging_cost
+    : (fallbackSettings.defaultPackagingCost ?? DEFAULT_SETTINGS.defaultPackagingCost);
 
-  const defaultOtherCosts = Number(
-    row.default_other_costs ?? 
-    row.defaultOtherCosts ?? 
-    extData?.defaultOtherCosts ?? 
-    fallbackSettings.defaultOtherCosts ?? 
-    DEFAULT_SETTINGS.defaultOtherCosts
-  );
+  const defaultOtherCosts = typeof row.default_other_costs === 'number'
+    ? row.default_other_costs
+    : (fallbackSettings.defaultOtherCosts ?? DEFAULT_SETTINGS.defaultOtherCosts);
 
-  const defaultPaymentFeePercent = Number(
-    row.default_payment_fee_percent ?? 
-    row.defaultPaymentFeePercent ?? 
-    extData?.defaultPaymentFeePercent ?? 
-    fallbackSettings.defaultPaymentFeePercent ?? 
-    DEFAULT_SETTINGS.defaultPaymentFeePercent
-  );
+  const defaultPaymentFeePercent = typeof row.default_payment_fee_percent === 'number'
+    ? row.default_payment_fee_percent
+    : (fallbackSettings.defaultPaymentFeePercent ?? DEFAULT_SETTINGS.defaultPaymentFeePercent);
 
-  const defaultMarketplaceFeePercent = Number(
-    row.default_marketplace_fee_percent ?? 
-    row.defaultMarketplaceFeePercent ?? 
-    extData?.defaultMarketplaceFeePercent ?? 
-    fallbackSettings.defaultMarketplaceFeePercent ?? 
-    DEFAULT_SETTINGS.defaultMarketplaceFeePercent
-  );
+  const defaultMarketplaceFeePercent = typeof row.default_marketplace_fee_percent === 'number'
+    ? row.default_marketplace_fee_percent
+    : (fallbackSettings.defaultMarketplaceFeePercent ?? DEFAULT_SETTINGS.defaultMarketplaceFeePercent);
 
-  const defaultTaxPercent = Number(
-    row.default_tax_percent ?? 
-    row.defaultTaxPercent ?? 
-    extData?.defaultTaxPercent ?? 
-    fallbackSettings.defaultTaxPercent ?? 
-    DEFAULT_SETTINGS.defaultTaxPercent
-  );
+  const defaultTaxPercent = typeof row.default_tax_percent === 'number'
+    ? row.default_tax_percent
+    : (fallbackSettings.defaultTaxPercent ?? DEFAULT_SETTINGS.defaultTaxPercent);
 
   const autoRefreshOrders = typeof row.auto_refresh_orders === 'boolean'
     ? row.auto_refresh_orders
-    : (typeof row.autoRefreshOrders === 'boolean'
-      ? row.autoRefreshOrders
-      : (typeof extData?.autoRefreshOrders === 'boolean'
-        ? extData.autoRefreshOrders
-        : (fallbackSettings.autoRefreshOrders ?? true)));
+    : (fallbackSettings.autoRefreshOrders ?? DEFAULT_SETTINGS.autoRefreshOrders ?? true);
 
-  const carrierBrands = Array.isArray(extData?.filamentBrands) && extData.filamentBrands.length > 0
-    ? extData.filamentBrands
-    : null;
-  const dbBrands = Array.isArray(row.filament_brands) && row.filament_brands.length > 0
-    ? row.filament_brands
-    : (Array.isArray(row.filamentBrands) && row.filamentBrands.length > 0 ? row.filamentBrands : null);
-  const resolvedBrands = dbBrands || carrierBrands || fallbackSettings.filamentBrands || DEFAULT_SETTINGS.filamentBrands;
+  const updatedAt = row.updated_at ? String(row.updated_at) : (fallbackSettings.updatedAt || undefined);
+  const version = typeof row.version === 'number' ? row.version : (fallbackSettings.version ?? undefined);
 
   return {
-    defaultEnergyCost: Number(row.default_energy_cost ?? row.defaultEnergyCost ?? fallbackSettings.defaultEnergyCost ?? DEFAULT_SETTINGS.defaultEnergyCost),
-    defaultFilamentCost: Number(row.default_filament_cost ?? row.defaultFilamentCost ?? fallbackSettings.defaultFilamentCost ?? DEFAULT_SETTINGS.defaultFilamentCost),
-    defaultProfitMargin: Number(row.default_profit_margin ?? row.defaultProfitMargin ?? fallbackSettings.defaultProfitMargin ?? DEFAULT_SETTINGS.defaultProfitMargin),
+    defaultEnergyCost,
+    defaultFilamentCost,
+    defaultProfitMargin,
     hourlyLaborRate,
     hourlyMaintenanceCost,
-    currency: String(row.currency || fallbackSettings.currency || DEFAULT_SETTINGS.currency),
-    filamentBrands: resolvedBrands,
-    categories: cleanCategories.length > 0 ? cleanCategories : (fallbackSettings.categories || DEFAULT_SETTINGS.categories),
-    businessInfo: resolvedBusiness,
+    currency,
+    filamentBrands,
+    categories,
+    businessInfo,
     defaultPackagingCost,
     defaultOtherCosts,
     defaultPaymentFeePercent,
     defaultMarketplaceFeePercent,
     defaultTaxPercent,
     autoRefreshOrders,
-    updatedAt: (row.updated_at || extData?.updatedAt) ? String(row.updated_at || extData?.updatedAt) : (fallbackSettings.updatedAt || undefined),
-    version: typeof row.version === 'number' ? row.version : (fallbackSettings.version ?? undefined)
+    updatedAt,
+    version
   };
 }
 
@@ -337,7 +219,10 @@ export function rowToSettings(
  * Envia valores definidos para permitir diferenciação precisa entre omissão e valor vazio intencional.
  */
 export function settingsToFullRow(settings: Settings, userId: string): SupabaseSettingsRow {
-  const categoriesWithCarrier = embedCarrierInCategories(settings.categories, settings);
+  const legacyCarrierPrefix = ['__PRINTFLOW', 'EXT', 'SYNC__:'].join('_');
+  const cleanCategories = (settings.categories || DEFAULT_SETTINGS.categories || []).filter(
+    (c: any) => typeof c === 'string' && !c.startsWith(legacyCarrierPrefix) && c.trim() !== ''
+  );
 
   const row: SupabaseSettingsRow = {
     user_id: userId,
@@ -348,7 +233,7 @@ export function settingsToFullRow(settings: Settings, userId: string): SupabaseS
     hourly_maintenance_cost: typeof settings.hourlyMaintenanceCost === 'number' ? settings.hourlyMaintenanceCost : DEFAULT_SETTINGS.hourlyMaintenanceCost,
     currency: settings.currency || DEFAULT_SETTINGS.currency || 'R$',
     filament_brands: settings.filamentBrands || DEFAULT_SETTINGS.filamentBrands,
-    categories: categoriesWithCarrier,
+    categories: cleanCategories,
     business_info: settings.businessInfo || DEFAULT_SETTINGS.businessInfo || {},
     default_packaging_cost: typeof settings.defaultPackagingCost === 'number' ? settings.defaultPackagingCost : DEFAULT_SETTINGS.defaultPackagingCost,
     default_other_costs: typeof settings.defaultOtherCosts === 'number' ? settings.defaultOtherCosts : DEFAULT_SETTINGS.defaultOtherCosts,
@@ -367,25 +252,6 @@ export function settingsToFullRow(settings: Settings, userId: string): SupabaseS
  * Alias de compatibilidade para settingsToFullRow
  */
 export const settingsToRow = settingsToFullRow;
-
-/**
- * Retorna o payload para a tabela settings do Supabase com o carrier embutido em categories.
- * Isso garante que dados comerciais, custos horários e taxas sejam sempre salvos no banco remoto
- * mesmo se a tabela no Supabase não tiver as colunas estendidas criadas.
- */
-export function settingsToBaseRow(settings: Settings, userId: string): Record<string, any> {
-  const categoriesWithCarrier = embedCarrierInCategories(settings.categories, settings);
-
-  return {
-    user_id: userId,
-    default_energy_cost: settings.defaultEnergyCost,
-    default_filament_cost: settings.defaultFilamentCost,
-    default_profit_margin: settings.defaultProfitMargin,
-    currency: settings.currency || 'R$',
-    filament_brands: settings.filamentBrands || [],
-    categories: categoriesWithCarrier
-  };
-}
 
 /**
  * Carrega configurações do cache local isoladas por user_id
@@ -418,20 +284,6 @@ export function saveLocalSettings(userId: string, settings: Settings, pendingSyn
     localStorage.setItem(`printflow_settings_${userId}`, JSON.stringify(settings));
     localStorage.setItem(`printflow_pending_sync_${userId}`, pendingSync ? 'true' : 'false');
     localStorage.setItem(`printflow_last_saved_${userId}`, new Date().toISOString());
-
-    // Mantém compatibilidade com caches legados caso outros módulos acessem diretamente
-    if (settings.businessInfo) {
-      localStorage.setItem(`printflow_business_info_${userId}`, JSON.stringify(settings.businessInfo));
-    }
-    localStorage.setItem(`printflow_extended_settings_${userId}`, JSON.stringify({
-      hourlyLaborRate: settings.hourlyLaborRate,
-      hourlyMaintenanceCost: settings.hourlyMaintenanceCost,
-      defaultPackagingCost: settings.defaultPackagingCost,
-      defaultOtherCosts: settings.defaultOtherCosts,
-      defaultPaymentFeePercent: settings.defaultPaymentFeePercent,
-      defaultMarketplaceFeePercent: settings.defaultMarketplaceFeePercent,
-      defaultTaxPercent: settings.defaultTaxPercent
-    }));
   } catch (err) {
     console.warn('Erro ao salvar no localStorage:', err);
   }
@@ -457,16 +309,9 @@ export async function fetchRemoteSettings(userId: string): Promise<{ data: Recor
   }
 }
 
-/**
- * Salva configurações no Supabase com estratégia segura e transparente:
- * 1. Tenta salvar o payload completo snake_case com todas as colunas
- * 2. Se o banco remoto ainda não tiver as novas colunas (PGRST204 / 42703), salva as colunas base no Supabase
- *    e sinaliza requiresMigration: true para que o usuário seja informado com precisão.
- */
 export interface SaveRemoteSettingsResult {
   success: boolean;
   cloudSyncedFull: boolean;
-  requiresMigration: boolean;
   conflict?: boolean;
   remoteUpdatedAt?: string;
   remoteVersion?: number;
@@ -475,95 +320,44 @@ export interface SaveRemoteSettingsResult {
 }
 
 /**
- * Salva configurações no Supabase com estratégia segura e transparente:
- * 1. Verifica concorrência/versão de outro dispositivo para prevenir sobrescrita acidental (conflito)
- * 2. Tenta salvar o payload completo snake_case com todas as colunas
- * 3. Se o banco remoto ainda não tiver as novas colunas (PGRST204 / 42703), salva as colunas base no Supabase
- *    e sinaliza requiresMigration: true para que o usuário seja informado com precisão.
+ * Salva configurações no Supabase usando colunas reais em snake_case com controle de versão
+ * e checagem de concorrência/conflito por updated_at.
  */
 export async function saveRemoteSettings(
   userId: string,
   settings: Settings,
   options?: { force?: boolean; expectedVersion?: number }
 ): Promise<SaveRemoteSettingsResult> {
-  const fullRow = settingsToFullRow(settings, userId);
-
   try {
-    // 1. TENTATIVA PRIMÁRIA ATÔMICA: Execução via função RPC no banco (com controle de versão inteiro OCC)
-    try {
-      const expectedVer = typeof options?.expectedVersion === 'number'
-        ? options.expectedVersion
-        : (typeof settings.version === 'number' ? settings.version : null);
+    let currentRemoteVersion: number | null = null;
 
-      const { data: rpcData, error: rpcError } = await supabase.rpc('save_settings_atomic', {
-        p_expected_version: expectedVer,
-        p_expected_updated_at: settings.updatedAt || null,
-        p_force: Boolean(options?.force),
-        p_settings: fullRow
-      });
-
-      if (!rpcError && rpcData) {
-        if (rpcData.conflict) {
-          return {
-            success: false,
-            cloudSyncedFull: false,
-            requiresMigration: false,
-            conflict: true,
-            remoteVersion: rpcData.remote_version,
-            remoteUpdatedAt: rpcData.remote_updated_at,
-            error: rpcData.error || 'Conflito de versão: o registro foi atualizado em outro dispositivo.'
-          };
-        }
-
-        if (rpcData.success) {
-          if (typeof rpcData.version === 'number') {
-            settings.version = rpcData.version;
-          }
-          settings.updatedAt = rpcData.updated_at || fullRow.updated_at || new Date().toISOString();
-          return {
-            success: true,
-            cloudSyncedFull: true,
-            requiresMigration: false,
-            newVersion: rpcData.version,
-            error: null
-          };
-        }
-
-        // Se a RPC rejeitou a operação (validação de payload inválido, etc.), não recorre a fallback cego
-        return {
-          success: false,
-          cloudSyncedFull: false,
-          requiresMigration: false,
-          conflict: false,
-          error: rpcData.error || 'Validação de configurações rejeitada pelo banco.'
-        };
-      }
-    } catch (rpcErr) {
-      console.warn('RPC save_settings_atomic ainda não instalado no banco, recorrendo ao fallback:', rpcErr);
-    }
-
-    // 2. FALLBACK DE COMPATIBILIDADE: Para instâncias onde o script da função RPC ainda não foi executado
-    if (!options?.force && settings.updatedAt) {
+    // 1. Checagem de conflito por updated_at (se o updated_at remoto for mais de 2 segundos mais novo que o local e não for force, retornar conflict)
+    if (!options?.force) {
       try {
         const { data: currentRemote } = await supabase
           .from('settings')
-          .select('updated_at')
+          .select('updated_at, version')
           .eq('user_id', userId)
           .maybeSingle();
 
-        if (currentRemote?.updated_at) {
-          const remoteTime = new Date(currentRemote.updated_at).getTime();
-          const localTime = new Date(settings.updatedAt).getTime();
-          // Mais de 15 segundos de diferença indica gravação real feita em outro dispositivo
-          if (!isNaN(remoteTime) && !isNaN(localTime) && remoteTime > localTime + 15000) {
-            return {
-              success: false,
-              cloudSyncedFull: false,
-              requiresMigration: false,
-              conflict: true,
-              remoteUpdatedAt: currentRemote.updated_at,
-              error: 'Conflito detectado: as configurações foram alteradas em outro dispositivo mais recentemente.'
-            };
+        if (currentRemote) {
+          if (typeof currentRemote.version === 'number') {
+            currentRemoteVersion = currentRemote.version;
+          }
+
+          if (settings.updatedAt && currentRemote.updated_at) {
+            const remoteTime = new Date(currentRemote.updated_at).getTime();
+            const localTime = new Date(settings.updatedAt).getTime();
+            if (!isNaN(remoteTime) && !isNaN(localTime) && remoteTime > localTime + 2000) {
+              return {
+                success: false,
+                cloudSyncedFull: false,
+                conflict: true,
+                remoteVersion: currentRemoteVersion ?? undefined,
+                remoteUpdatedAt: currentRemote.updated_at,
+                error: 'Conflito detectado: as configurações foram alteradas em outro dispositivo mais recentemente.'
+              };
+            }
           }
         }
       } catch (conflErr) {
@@ -571,97 +365,44 @@ export async function saveRemoteSettings(
       }
     }
 
-    // Tentativa: Enviar payload completo padronizado em snake_case
-    const { error: fullError } = await supabase
+    // 2. Incrementar version: gravar version = (version atual conhecida ou 0) + 1 e atualizar settings.version com o valor gravado
+    const baseVersion = typeof currentRemoteVersion === 'number'
+      ? currentRemoteVersion
+      : (typeof settings.version === 'number' ? settings.version : 0);
+    const nextVersion = baseVersion + 1;
+
+    const nowTs = new Date().toISOString();
+    const fullRow = settingsToFullRow(settings, userId);
+    fullRow.updated_at = nowTs;
+    fullRow.version = nextVersion;
+
+    // 3. Upsert do payload completo em snake_case
+    const { error: upsertError } = await supabase
       .from('settings')
       .upsert(fullRow);
 
-    if (!fullError) {
-      // Atualiza timestamp local com o timestamp recém gravado
-      const newTimestamp = fullRow.updated_at || new Date().toISOString();
-      settings.updatedAt = newTimestamp;
+    if (upsertError) {
       return {
-        success: true,
-        cloudSyncedFull: true,
-        requiresMigration: false,
-        remoteUpdatedAt: newTimestamp,
-        error: null
+        success: false,
+        cloudSyncedFull: false,
+        error: sanitizeErrorMessage(upsertError.message)
       };
     }
 
-    // Se o erro foi coluna ausente (PGRST204 ou código 42703 de coluna inexistente)
-    const isColumnMissing = fullError.code === 'PGRST204' || 
-      fullError.code === '42703' || 
-      fullError.message.toLowerCase().includes('column') || 
-      fullError.message.toLowerCase().includes('coluna');
-
-    if (isColumnMissing) {
-      console.warn('Colunas estendidas ausentes no Supabase. Gravando colunas base no banco...');
-      
-      const baseRow = settingsToBaseRow(settings, userId);
-      const { error: baseError } = await supabase
-        .from('settings')
-        .upsert(baseRow);
-
-      if (baseError) {
-        console.warn('Erro ao gravar baseRow no Supabase, tentando minimalRow com carrier...', baseError.message);
-        // Se a coluna filament_brands também não existir no banco do usuário,
-        // o carrier embutido em categories salva marcas, dados comerciais e custos com resiliência total
-        const minimalRow = {
-          user_id: userId,
-          default_energy_cost: settings.defaultEnergyCost,
-          default_filament_cost: settings.defaultFilamentCost,
-          default_profit_margin: settings.defaultProfitMargin,
-          currency: settings.currency || 'R$',
-          categories: fullRow.categories
-        };
-        const { error: minError } = await supabase
-          .from('settings')
-          .upsert(minimalRow);
-
-        if (minError) {
-          return {
-            success: false,
-            cloudSyncedFull: false,
-            requiresMigration: true,
-            error: sanitizeErrorMessage(baseError.message)
-          };
-        }
-
-        const nowTs = new Date().toISOString();
-        settings.updatedAt = nowTs;
-        return {
-          success: true,
-          cloudSyncedFull: true,
-          requiresMigration: false,
-          remoteUpdatedAt: nowTs,
-          error: null
-        };
-      }
-
-      // O carrier embutido em categories salvou com sucesso todos os dados comerciais e configurações estendidas na nuvem
-      const nowTs = new Date().toISOString();
-      settings.updatedAt = nowTs;
-      return {
-        success: true,
-        cloudSyncedFull: true,
-        requiresMigration: false,
-        remoteUpdatedAt: nowTs,
-        error: null
-      };
-    }
+    settings.version = nextVersion;
+    settings.updatedAt = nowTs;
 
     return {
-      success: false,
-      cloudSyncedFull: false,
-      requiresMigration: false,
-      error: sanitizeErrorMessage(fullError.message)
+      success: true,
+      cloudSyncedFull: true,
+      newVersion: nextVersion,
+      remoteUpdatedAt: nowTs,
+      error: null
     };
   } catch (err: any) {
     return {
       success: false,
       cloudSyncedFull: false,
-      requiresMigration: false,
       error: sanitizeErrorMessage(err?.message || 'Falha de conexão com o banco de dados')
     };
   }

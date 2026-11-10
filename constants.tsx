@@ -175,8 +175,6 @@ export const calculatePartCosts = (
   let batchTotalWeight = 0;
   if (part.recipe && part.recipe.length > 0 && allFilaments.length > 0) {
     part.recipe.forEach(item => {
-      // Ignora metadados embutidos
-      if ((item as any)._embeddedSupplies || (item as any)._metadata || (item as any)._unitsPerPrint) return;
       const filament = allFilaments.find(f => f.id === item.filamentId);
       if (filament) {
         const costPerGram = filament.pricePaid / filament.weight;

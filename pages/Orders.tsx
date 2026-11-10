@@ -3210,8 +3210,13 @@ export const Orders: React.FC = () => {
                 WhatsApp
               </button>
               <button 
-                onClick={() => window.print()}
+                onClick={() => {
+                  const o = receiptOrder;
+                  setReceiptOrder(null);
+                  setQuoteModalOrder(o);
+                }}
                 className="px-4 py-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-bold rounded-xl text-xs flex items-center justify-center gap-2 transition"
+                title="Imprimir Pedido / Orçamento em Folha A4 Oficial"
               >
                 <PrinterIcon className="w-4 h-4" />
                 Imprimir

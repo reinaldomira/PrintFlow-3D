@@ -65,9 +65,21 @@
         }
 
         @media print {
-            body {
-                background: white !important;
-                color: black !important;
+            @page {
+                size: A4 portrait;
+                margin: 6mm;
+            }
+            *, *::before, *::after {
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+            }
+            html, body {
+                background: #ffffff !important;
+                color: #0f172a !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                width: 100% !important;
+                min-height: auto !important;
             }
             body * {
                 visibility: hidden;
@@ -82,9 +94,14 @@
                 width: 100% !important;
                 max-width: 100% !important;
                 margin: 0 !important;
-                padding: 8mm !important;
+                padding: 0 !important;
                 box-shadow: none !important;
                 border: none !important;
+                min-height: auto !important;
+            }
+            tr, .print-avoid-break {
+                break-inside: avoid !important;
+                page-break-inside: avoid !important;
             }
         }
     </style>

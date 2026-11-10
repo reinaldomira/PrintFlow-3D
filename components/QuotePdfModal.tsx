@@ -445,12 +445,12 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
           </div>
         )}
 
-        {/* Pré-visualização da Folha A4 do Orçamento (Fiel a pdf-2_64ef64aa.jpg) */}
-        <div className="p-3 sm:p-6 bg-zinc-950 overflow-y-auto flex justify-center">
+        {/* Pré-visualização da Folha A4 do Orçamento */}
+        <div className="p-2 sm:p-6 bg-zinc-950 overflow-y-auto overflow-x-auto flex justify-start sm:justify-center">
           <div 
             id="quote-printable-sheet" 
-            className="w-full max-w-[210mm] bg-white text-slate-900 rounded-lg shadow-2xl p-6 sm:p-10 font-sans border border-slate-200 text-[13px] leading-relaxed select-text"
-            style={{ minHeight: '297mm' }}
+            className="w-full max-w-[210mm] bg-white text-slate-900 rounded-lg shadow-2xl p-4 sm:p-8 font-sans border border-slate-200 text-[13px] leading-relaxed select-text flex-shrink-0"
+            style={{ minHeight: 'auto' }}
           >
             
             {/* 1. BARRA TÉCNICA DO ORÇAMENTO */}
@@ -467,7 +467,7 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
             </div>
 
             {/* 2. CABEÇALHO / MARCA & QUADRO DO ORÇAMENTO (CARD PRETO #0B0F19) */}
-            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-6">
+            <div className="print-avoid-break flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-6">
               <div className="space-y-1.5 max-w-md">
                 <div className="flex items-center gap-3 flex-wrap">
                   {business.logoUrl ? (
@@ -521,7 +521,7 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
             </div>
 
             {/* 3. CARDS: CLIENTE / SOLICITANTE & PROPOSTA TÉCNICA (CARD ESCURO) */}
-            <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 mb-6">
+            <div className="print-avoid-break grid grid-cols-1 sm:grid-cols-12 gap-3 mb-6">
               {/* Card Cliente */}
               <div className="sm:col-span-7 bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
                 <div className="flex items-center justify-between">
@@ -602,11 +602,11 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
               </div>
 
               {/* Tabela com Cabeçalho Preto */}
-              <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                <table className="w-full text-left border-collapse">
+              <div className="border border-slate-200 rounded-xl overflow-x-auto shadow-sm">
+                <table className="w-full min-w-[520px] text-left border-collapse">
                   <thead>
                     <tr className="bg-slate-950 text-white font-bold text-[10px] uppercase">
-                      <th className="py-2.5 px-3 w-14 text-center">Ref</th>
+                      <th className="py-2.5 px-3 w-12 text-center">Ref</th>
                       <th className="py-2.5 px-3">Especificação do Produto & Parâmetros de Produção</th>
                       <th className="py-2.5 px-3 w-16 text-center">Qtd</th>
                       <th className="py-2.5 px-3 w-24 text-right">Unitário</th>
@@ -617,19 +617,20 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
                     {(order.items || []).map((item, idx) => {
                       const part = parts.find(p => p.id === item.partId);
                       const title = item.name || part?.name || `Item 3D #${idx + 1}`;
+                      const mat = part?.material || part?.category;
 
                       return (
                         <tr key={idx} className="hover:bg-slate-50/70 transition-colors">
                           {/* Referência */}
-                          <td className="py-4 px-3 text-center font-mono font-bold text-slate-400 text-xs">
+                          <td className="py-3 px-3 text-center font-mono font-bold text-slate-400 text-xs">
                             #{String(idx + 1).padStart(2, '0')}
                           </td>
 
-                          {/* Foto Ampliada (31mm / 100px) e Especificação */}
-                          <td className="py-4 px-3">
-                            <div className="flex items-center gap-4">
+                          {/* Foto e Especificação */}
+                          <td className="py-3 px-3">
+                            <div className="flex items-center gap-3">
                               {/* Foto */}
-                              <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-xl bg-slate-100 border border-slate-200 flex-shrink-0 flex items-center justify-center overflow-hidden shadow-sm">
+                              <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-xl bg-slate-100 border border-slate-200 flex-shrink-0 flex items-center justify-center overflow-hidden shadow-xs">
                                 {part?.imageUrl ? (
                                   <img 
                                     src={part.imageUrl} 
@@ -638,16 +639,21 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
                                   />
                                 ) : (
                                   <div className="text-center p-2 text-slate-400">
-                                    <Layers className="w-8 h-8 mx-auto mb-1 text-slate-300" />
-                                    <span className="text-[10px] font-bold">Foto 3D</span>
+                                    <Layers className="w-6 h-6 mx-auto mb-1 text-slate-300" />
+                                    <span className="text-[9px] font-bold">Foto 3D</span>
                                   </div>
                                 )}
                               </div>
 
-                              <div className="flex-1 py-1">
-                                <strong className="text-slate-950 font-bold text-sm block">
+                              <div className="flex-1 min-w-0 py-0.5">
+                                <strong className="text-slate-950 font-bold text-sm block break-words">
                                   {title}
                                 </strong>
+                                {mat && (
+                                  <span className="text-[10px] text-slate-500 block mt-0.5">
+                                    Material / Linha: {mat}
+                                  </span>
+                                )}
                               </div>
                             </div>
                           </td>
@@ -675,7 +681,7 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
             </div>
 
             {/* 5. CONDIÇÕES TÉCNICAS (ESQUERDA) & RESUMO FINANCEIRO (DIREITA - CARD ESCURO) */}
-            <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 mb-6">
+            <div className="print-avoid-break grid grid-cols-1 sm:grid-cols-12 gap-3 mb-6">
               
               {/* Condições Técnicas e Fabricação (Fundo Claro) */}
               <div className="sm:col-span-7 bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col justify-between space-y-3">
@@ -772,7 +778,7 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
 
             {/* 5.3 SEÇÃO: DADOS PARA PAGAMENTO PIX (QUANDO ATIVO) OU TERMO INFORMATIVO (QUANDO ORÇAMENTO) */}
             {includePaymentInfo ? (
-              <div className="bg-emerald-50/50 border border-emerald-200 rounded-xl p-4 mb-6 shadow-xs">
+              <div className="print-avoid-break bg-emerald-50/50 border border-emerald-200 rounded-xl p-4 mb-6 shadow-xs">
                 <div className="flex items-center justify-between pb-2 mb-2.5 border-b border-emerald-200 flex-wrap gap-2">
                   <div className="flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
@@ -829,7 +835,7 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
                 </div>
               </div>
             ) : (
-              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-6 shadow-xs">
+              <div className="print-avoid-break bg-slate-50 border border-slate-200 rounded-xl p-4 mb-6 shadow-xs">
                 <div className="flex items-center justify-between pb-2 mb-2.5 border-b border-slate-200 flex-wrap gap-2">
                   <div className="flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
@@ -860,7 +866,7 @@ export const QuotePdfModal: React.FC<QuotePdfModalProps> = ({
             )}
 
             {/* 6. RODAPÉ COMERCIAL & VALIDAÇÃO */}
-            <div className="pt-3 border-t border-slate-200 text-[10px] text-slate-500 space-y-1">
+            <div className="print-avoid-break pt-3 border-t border-slate-200 text-[10px] text-slate-500 space-y-1">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <strong className="text-slate-900 uppercase tracking-wider">{companyName}</strong>
                 <div className="flex flex-wrap items-center gap-3 text-slate-600 text-[10px]">

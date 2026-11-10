@@ -127,18 +127,11 @@ const Catalog: React.FC = () => {
       const rawUnits = Number(editingPart.unitsPerPrint);
       const unitsPerPrint = (!isNaN(rawUnits) && rawUnits >= 1) ? Math.floor(rawUnits) : 1;
 
-      // Remove marcadores de fallback anteriores do array de filamentos
-      const cleanRecipe = (editingPart.recipe || []).filter((r: any) => 
-        !r._embeddedSupplies && !r._supplies && !r._metadata && !r._unitsPerPrint
-      );
-
-      const embeddedItems: any[] = [];
-      if (rawSupplies.length > 0) {
-        embeddedItems.push({ _embeddedSupplies: rawSupplies });
-      }
-      if (unitsPerPrint > 1) {
-        embeddedItems.push({ _metadata: { unitsPerPrint } });
-      }
+      // O recipe enviado deve conter apenas os itens de filamento (descartar itens com chaves que começam com "_")
+      const cleanRecipe = (editingPart.recipe || []).filter((r: any) => {
+        if (!r || typeof r !== 'object') return false;
+        return !Object.keys(r).some(k => k.startsWith('_'));
+      });
 
       const payload: any = { 
         user_id: user.id,
@@ -153,70 +146,26 @@ const Catalog: React.FC = () => {
         energyCost: calculated.batchEnergyCost,
         wastePercent: Number(editingPart.wastePercent) || 5,
         profitMargin: Number(editingPart.profitMargin) || settings.defaultProfitMargin,
-        recipe: embeddedItems.length > 0 ? [...cleanRecipe, ...embeddedItems] : cleanRecipe,
+        recipe: cleanRecipe,
         imageUrl: editingPart.imageUrl || null,
-        updatedAt: new Date().toISOString()
-      };
-
-      const fullPayload = {
-        ...payload,
+        updatedAt: new Date().toISOString(),
         supplies: rawSupplies,
         unitsPerPrint
       };
 
-      const isColumnMissingError = (err: any) => {
-        if (!err) return false;
-        const msg = (err.message || '').toLowerCase();
-        return (
-          msg.includes('supplies') || 
-          msg.includes('unitsperprint') || 
-          msg.includes('units_per_print') || 
-          msg.includes('column') || 
-          msg.includes('schema cache') ||
-          err.code === 'PGRST204' || 
-          err.code === 'PGRST205' || 
-          err.code === '42703'
-        );
-      };
-
-      let savedId = editingPart.id;
-      let finalResult;
-
       if (editingPart.id) {
-        finalResult = await supabase.from('parts').update(fullPayload).eq('id', editingPart.id).eq('user_id', user.id).select().single();
-        if (finalResult.error && isColumnMissingError(finalResult.error)) {
-          // Salva sem colunas ausentes no schema nativo; insumos e unitsPerPrint estão seguros no campo recipe embutido
-          finalResult = await supabase.from('parts').update(payload).eq('id', editingPart.id).eq('user_id', user.id).select().single();
-        }
+        const { error } = await supabase
+          .from('parts')
+          .update(payload)
+          .eq('id', editingPart.id)
+          .eq('user_id', user.id);
+        if (error) throw error;
       } else {
         payload.createdAt = new Date().toISOString();
-        fullPayload.createdAt = payload.createdAt;
-        finalResult = await supabase.from('parts').insert([fullPayload]).select().single();
-        if (finalResult.error && isColumnMissingError(finalResult.error)) {
-          finalResult = await supabase.from('parts').insert([payload]).select().single();
-        }
-        if (finalResult.data?.id) {
-          savedId = finalResult.data.id;
-        }
-      }
-
-      if (finalResult.error) throw finalResult.error;
-
-      // Salva no cache local de insumos e metadados por peça para acesso instantâneo
-      if (savedId) {
-        try {
-          const suppKey = `printflow_part_supplies_${user.id}`;
-          const storedSupp = localStorage.getItem(suppKey);
-          const suppMap = storedSupp ? JSON.parse(storedSupp) : {};
-          suppMap[savedId] = rawSupplies;
-          localStorage.setItem(suppKey, JSON.stringify(suppMap));
-
-          const metaKey = `printflow_part_metadata_${user.id}`;
-          const storedMeta = localStorage.getItem(metaKey);
-          const metaMap = storedMeta ? JSON.parse(storedMeta) : {};
-          metaMap[savedId] = { unitsPerPrint };
-          localStorage.setItem(metaKey, JSON.stringify(metaMap));
-        } catch (e) {}
+        const { error } = await supabase
+          .from('parts')
+          .insert([payload]);
+        if (error) throw error;
       }
 
       await refreshData();
@@ -241,27 +190,6 @@ const Catalog: React.FC = () => {
     try {
       // Atualização otimista imediata para resposta ágil
       setParts(parts.filter(p => p.id !== idToDelete));
-      
-      // Limpa cache local de insumos e metadados da peça excluída
-      try {
-        if (user) {
-          const suppKey = `printflow_part_supplies_${user.id}`;
-          const storedSupp = localStorage.getItem(suppKey);
-          if (storedSupp) {
-            const suppMap = JSON.parse(storedSupp);
-            delete suppMap[idToDelete];
-            localStorage.setItem(suppKey, JSON.stringify(suppMap));
-          }
-
-          const metaKey = `printflow_part_metadata_${user.id}`;
-          const storedMeta = localStorage.getItem(metaKey);
-          if (storedMeta) {
-            const metaMap = JSON.parse(storedMeta);
-            delete metaMap[idToDelete];
-            localStorage.setItem(metaKey, JSON.stringify(metaMap));
-          }
-        }
-      } catch (e) {}
 
       const { error } = await supabase.from('parts').delete().eq('id', idToDelete).eq('user_id', user.id);
       if (error) throw error;

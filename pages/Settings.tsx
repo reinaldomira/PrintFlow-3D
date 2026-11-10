@@ -102,7 +102,7 @@ ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFA
 ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS version integer DEFAULT 1;
 
 ALTER TABLE public.parts ADD COLUMN IF NOT EXISTS supplies jsonb DEFAULT '[]'::jsonb;
-ALTER TABLE public.parts ADD COLUMN IF NOT EXISTS units_per_print numeric DEFAULT 1;`;
+ALTER TABLE public.parts ADD COLUMN IF NOT EXISTS "unitsPerPrint" numeric NOT NULL DEFAULT 1;`;
 
   const copySyncSql = () => {
     navigator.clipboard.writeText(businessSyncSql);

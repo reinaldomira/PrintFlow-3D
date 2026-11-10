@@ -10,7 +10,6 @@ import {
   fetchRemoteSettings, 
   saveRemoteSettings, 
   sanitizeErrorMessage,
-  extractCarrierData,
   isNetworkError,
   isSchemaError
 } from '../services/settingsService';
@@ -135,6 +134,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const migratedFailuresRef = useRef(false);
   const migratedExpensesRef = useRef(false);
   const migratedPaymentStatusRef = useRef(false);
+  const migratedBusinessInfoRef = useRef(false);
 
   const applyUser = (sessionUser: { id: string; email?: string } | null) => {
     setUser(prev => {
@@ -197,6 +197,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         migratedFailuresRef.current = false;
         migratedExpensesRef.current = false;
         migratedPaymentStatusRef.current = false;
+        migratedBusinessInfoRef.current = false;
       }
     });
 
@@ -358,56 +359,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         fetchTable('cash_expenses', 'created_at', false)
       ]);
 
-      // Preserva e normaliza dados de peças, garantindo que insumos vinculados nunca sejam perdidos
+      // Normaliza dados de peças usando diretamente as colunas supplies e unitsPerPrint
       if (partsRes.success && partsRes.data !== null) {
-        let cachedPartSupplies: Record<string, any[]> = {};
-        let cachedPartMetadata: Record<string, any> = {};
-        try {
-          const storedSupplies = localStorage.getItem(`printflow_part_supplies_${user.id}`);
-          if (storedSupplies) cachedPartSupplies = JSON.parse(storedSupplies);
-          const storedMeta = localStorage.getItem(`printflow_part_metadata_${user.id}`);
-          if (storedMeta) cachedPartMetadata = JSON.parse(storedMeta);
-        } catch (e) {}
-
         const normalizedParts = partsRes.data.map((row: any) => {
-          let supplies = row.supplies;
-          // Se row.supplies for nulo/vazio (ex: coluna ausente no banco), restaura do cache ou do recipe embutido
-          if (!Array.isArray(supplies) || supplies.length === 0) {
-            if (cachedPartSupplies[row.id] && Array.isArray(cachedPartSupplies[row.id])) {
-              supplies = cachedPartSupplies[row.id];
-            } else if (Array.isArray(row.recipe)) {
-              const embedded = row.recipe.find((item: any) => item && (item._embeddedSupplies || item._supplies));
-              if (embedded && Array.isArray(embedded._embeddedSupplies || embedded._supplies)) {
-                supplies = embedded._embeddedSupplies || embedded._supplies;
-              }
-            }
-          }
-
-          // Restaura unitsPerPrint (quantidade de peças por impressão / lote)
-          let unitsPerPrint = Number(row.unitsPerPrint ?? row.units_per_print);
-          if (!unitsPerPrint || isNaN(unitsPerPrint) || unitsPerPrint < 1) {
-            if (cachedPartMetadata[row.id]?.unitsPerPrint) {
-              unitsPerPrint = Number(cachedPartMetadata[row.id].unitsPerPrint);
-            } else if (Array.isArray(row.recipe)) {
-              const meta = row.recipe.find((item: any) => item && (item._metadata || item._unitsPerPrint));
-              if (meta?._metadata?.unitsPerPrint) unitsPerPrint = Number(meta._metadata.unitsPerPrint);
-              else if (meta?._unitsPerPrint) unitsPerPrint = Number(meta._unitsPerPrint);
-            }
-          }
-          if (!unitsPerPrint || isNaN(unitsPerPrint) || unitsPerPrint < 1) {
-            unitsPerPrint = 1;
-          }
-
-          // Remove marcadores internos (_embeddedSupplies, _metadata, _unitsPerPrint) do array de filamentos
-          const cleanRecipe = Array.isArray(row.recipe) 
-            ? row.recipe.filter((item: any) => item && !item._embeddedSupplies && !item._supplies && !item._metadata && !item._unitsPerPrint) 
-            : [];
+          const rawUnits = Number(row.unitsPerPrint);
+          const unitsPerPrint = (!isNaN(rawUnits) && rawUnits >= 1) ? Math.floor(rawUnits) : 1;
 
           return {
             ...row,
-            recipe: cleanRecipe,
-            supplies: supplies || [],
-            unitsPerPrint: Math.floor(unitsPerPrint)
+            supplies: Array.isArray(row.supplies) ? row.supplies : [],
+            unitsPerPrint
           };
         });
 
@@ -765,26 +726,55 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setSettingsSyncState('synced');
           setSettingsConflict(null);
 
-          // Auto-migração e auto-upload:
-          // Se o dispositivo local continha dados comerciais salvos (ex: editados no celular)
-          // mas a nuvem ainda não os tinha registrado, envia imediatamente ao Supabase com o carrier
-          const localHasBusiness = localCache?.settings?.businessInfo &&
-            Object.values(localCache.settings.businessInfo).some(v => v !== null && v !== undefined && String(v).trim() !== '');
-          const { extData } = extractCarrierData(remoteData.categories);
-          const remoteHasBusiness = (remoteData.business_info && Object.values(remoteData.business_info).some(v => v !== null && v !== undefined && String(v).trim() !== '')) ||
-            (extData?.businessInfo && Object.values(extData.businessInfo).some(v => v !== null && v !== undefined && String(v).trim() !== ''));
+          // Migração única: se business_info no banco estiver vazio e existir no localStorage 'printflow_business_info_<userId>' com dados,
+          // grava esses dados em business_info uma vez e então remove as chaves locais legadas.
+          // Se der erro, mantém as chaves. Trava com useRef para rodar uma vez por sessão.
+          if (!migratedBusinessInfoRef.current) {
+            try {
+              const remoteHasBusiness = remoteData.business_info &&
+                typeof remoteData.business_info === 'object' &&
+                Object.values(remoteData.business_info).some(v => v !== null && v !== undefined && String(v).trim() !== '');
 
-          if (localHasBusiness && !remoteHasBusiness) {
-            console.log('Dados comerciais locais detectados. Sincronizando automaticamente com Supabase Cloud...');
-            saveRemoteSettings(user.id, resolved).then((res) => {
-              if (res.success) {
-                console.log('Dados comerciais sincronizados na nuvem!');
-                saveLocalSettings(user.id, resolved, false);
-                setSettingsSyncState('synced');
+              if (!remoteHasBusiness) {
+                const storedRaw = localStorage.getItem(`printflow_business_info_${user.id}`);
+                if (storedRaw) {
+                  const parsed = JSON.parse(storedRaw);
+                  const hasLocalData = parsed && typeof parsed === 'object' &&
+                    Object.values(parsed).some(v => v !== null && v !== undefined && String(v).trim() !== '');
+
+                  if (hasLocalData) {
+                    migratedBusinessInfoRef.current = true;
+                    const settingsToMigrate: Settings = {
+                      ...resolved,
+                      businessInfo: parsed
+                    };
+                    saveRemoteSettings(user.id, settingsToMigrate).then((res) => {
+                      if (res.success) {
+                        setSettingsState(settingsToMigrate);
+                        saveLocalSettings(user.id, settingsToMigrate, false);
+                        try {
+                          localStorage.removeItem(`printflow_business_info_${user.id}`);
+                          localStorage.removeItem(['printflow', 'extended', 'settings', user.id].join('_'));
+                        } catch (e) {}
+                      } else {
+                        // Se der erro, mantém as chaves e permite nova tentativa
+                        migratedBusinessInfoRef.current = false;
+                      }
+                    }).catch(() => {
+                      migratedBusinessInfoRef.current = false;
+                    });
+                  } else {
+                    migratedBusinessInfoRef.current = true;
+                  }
+                } else {
+                  migratedBusinessInfoRef.current = true;
+                }
+              } else {
+                migratedBusinessInfoRef.current = true;
               }
-            }).catch(err => {
-              console.warn('Falha no auto-upload de dados comerciais locais:', err);
-            });
+            } catch (migrErr) {
+              console.warn('Erro ao verificar migração de business_info:', migrErr);
+            }
           }
         } else {
           // Sem registro remoto ainda (primeiro acesso)
@@ -902,17 +892,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           version: typeof result.newVersion === 'number' ? result.newVersion : newSettings.version
         };
         setSettingsState(syncedSettings);
-        if (result.cloudSyncedFull) {
-          saveLocalSettings(user.id, syncedSettings, false);
-          setSettingsSyncState('synced');
-          setDbError(prev => (prev && (prev.includes('settings') || prev.includes('Configurações') || prev.includes('Conflito')) ? null : prev));
-          return true;
-        } else if (result.requiresMigration) {
-          saveLocalSettings(user.id, syncedSettings, true);
-          setSettingsSyncState('pending_local');
-          setDbError('Custos básicos salvos no Supabase. Para sincronizar Dados Comerciais e Custos Horários entre computador e celular, execute o script SQL na aba Ajustes.');
-          return true;
-        }
+        saveLocalSettings(user.id, syncedSettings, false);
+        setSettingsSyncState('synced');
+        setDbError(prev => (prev && (prev.includes('settings') || prev.includes('Configurações') || prev.includes('Conflito')) ? null : prev));
+        return true;
       }
 
       saveLocalSettings(user.id, newSettings, true);

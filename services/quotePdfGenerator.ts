@@ -199,7 +199,7 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
   const marginX = 14;
   const contentWidth = pageWidth - marginX * 2; // 182mm
 
-  // Paleta Industrial de Engenharia / Manufatura Aditiva (Referência pdf-2)
+  // Paleta Industrial de Engenharia / Manufatura Aditiva
   const colorDarkBg = [11, 15, 25]; // #0B0F19 (Dark industrial black)
   const colorDarkText = [15, 23, 42]; // #0F172A (slate-900)
   const colorMutedText = [100, 116, 139]; // #64748B (slate-500)
@@ -263,28 +263,31 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
   let currentY = 10;
 
   // 1. TOP BAR TÉCNICO (PROPOSTA TÉCNICA 3D | MANUFATURA ADITIVA SOB DEMANDA | PRINTFLOW)
-  // Quadrado teal indicador
   doc.setFillColor(colorPrimaryEmerald[0], colorPrimaryEmerald[1], colorPrimaryEmerald[2]);
   doc.rect(marginX, currentY - 2.2, 2.2, 2.2, 'F');
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(6.5);
   doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
-  doc.text(showPaymentInfo ? 'ORDEM DE PRODUÇÃO 3D' : 'PROPOSTA TÉCNICA 3D', marginX + 3.8, currentY - 0.5);
+  const docTypeHeader = showPaymentInfo ? 'ORDEM DE PRODUÇÃO 3D' : 'PROPOSTA TÉCNICA 3D';
+  doc.text(docTypeHeader, marginX + 3.8, currentY - 0.5);
 
-  // Separador 1
+  const sep1X = marginX + doc.getTextWidth(docTypeHeader) + 6;
   doc.setDrawColor(colorBorder[0], colorBorder[1], colorBorder[2]);
   doc.setLineWidth(0.2);
-  doc.line(marginX + 33, currentY - 3, marginX + 33, currentY + 0.5);
+  doc.line(sep1X, currentY - 3, sep1X, currentY + 0.5);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(6);
   doc.setTextColor(colorMutedText[0], colorMutedText[1], colorMutedText[2]);
-  doc.text('MANUFATURA ADITIVA SOB DEMANDA', marginX + 36, currentY - 0.5);
+  const subtitle1 = 'MANUFATURA ADITIVA SOB DEMANDA';
+  doc.text(subtitle1, sep1X + 3, currentY - 0.5);
 
-  // Separador 2
-  doc.line(marginX + 87, currentY - 3, marginX + 87, currentY + 0.5);
-  doc.text('ESPECIFICAÇÕES DE PROJETO', marginX + 90, currentY - 0.5);
+  const sep2X = sep1X + 3 + doc.getTextWidth(subtitle1) + 4;
+  if (sep2X < 140) {
+    doc.line(sep2X, currentY - 3, sep2X, currentY + 0.5);
+    doc.text('ESPECIFICAÇÕES DE PROJETO', sep2X + 3, currentY - 0.5);
+  }
 
   // Badge ORÇAMENTO / PEDIDO à direita (Fundo Preto com texto Branco/Verde)
   const docTagText = showPaymentInfo ? (isPaid ? 'PEDIDO PAGO' : 'PEDIDO DE PRODUÇÃO') : 'ORÇAMENTO';
@@ -308,45 +311,6 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
   // 2. LOGO & BRANDING vs QUADRO DE ORÇAMENTO (CARD PRETO #0B0F19)
   const brandStartY = currentY;
 
-  // Se tem logotipo, usa inserção segura com suporte a PNG/JPEG e fallback gracioso
-  let hasLogoDrawn = false;
-  if (logoData) {
-    hasLogoDrawn = safeAddImage(doc, logoData, marginX, brandStartY, 28, 13);
-  }
-
-  if (!hasLogoDrawn) {
-    // Ícone estilizado industrial + Nome
-    doc.setFillColor(colorDarkBg[0], colorDarkBg[1], colorDarkBg[2]);
-    doc.roundedRect(marginX, brandStartY, 9, 9, 2, 2, 'F');
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(6.5);
-    doc.setTextColor(colorPrimaryEmerald[0], colorPrimaryEmerald[1], colorPrimaryEmerald[2]);
-    doc.text('3D', marginX + 2.5, brandStartY + 6);
-
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(14);
-    doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
-    doc.text(companyName, marginX + 11.5, brandStartY + 6.5);
-  }
-
-  // Badge da Oficina
-  const badgePrecX = marginX + (hasLogoDrawn ? 30 : 54);
-  doc.setFillColor(colorSoftTeal[0], colorSoftTeal[1], colorSoftTeal[2]);
-  doc.setDrawColor(colorTealBorder[0], colorTealBorder[1], colorTealBorder[2]);
-  doc.setLineWidth(0.2);
-  doc.roundedRect(badgePrecX, brandStartY + 2, 28, 4.2, 0.8, 0.8, 'FD');
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(5.5);
-  doc.setTextColor(colorTealDark[0], colorTealDark[1], colorTealDark[2]);
-  doc.text('IMPRESSÃO 3D', badgePrecX + 2.5, brandStartY + 5);
-
-  // Subtítulo da Oficina
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7.2);
-  doc.setTextColor(colorMutedText[0], colorMutedText[1], colorMutedText[2]);
-  const defaultTagline = business.website || business.address || 'Serviços especializados em manufatura aditiva e prototipagem 3D';
-  doc.text(defaultTagline.slice(0, 70), marginX, brandStartY + 14);
-
   // Card do Orçamento / Pedido à Direita (Fundo Preto Industrial #0B0F19)
   const orderBoxWidth = 65;
   const orderBoxHeight = 22;
@@ -355,7 +319,6 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
   doc.setFillColor(colorDarkBg[0], colorDarkBg[1], colorDarkBg[2]);
   doc.roundedRect(orderBoxX, brandStartY, orderBoxWidth, orderBoxHeight, 2, 2, 'F');
 
-  // Cabeçalho da Caixa: "ORÇAMENTO Nº" (Esquerda) e "#2026-0842" em Verde Esmeralda (Direita)
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(6.5);
   doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
@@ -366,12 +329,10 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
   doc.setTextColor(colorPrimaryEmerald[0], colorPrimaryEmerald[1], colorPrimaryEmerald[2]);
   doc.text(orderNumStr, orderBoxX + orderBoxWidth - doc.getTextWidth(orderNumStr) - 4, brandStartY + 6);
 
-  // Linha divisória interna do card escuro
   doc.setDrawColor(colorDarkBorder[0], colorDarkBorder[1], colorDarkBorder[2]);
   doc.setLineWidth(0.2);
   doc.line(orderBoxX + 4, brandStartY + 9, orderBoxX + orderBoxWidth - 4, brandStartY + 9);
 
-  // Datas: Emissão e Validade/Situação
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(6);
   doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
@@ -392,12 +353,56 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
     doc.text(valText, orderBoxX + 32, brandStartY + 18);
   }
 
-  currentY = brandStartY + 26;
+  // Se tem logotipo, usa inserção segura com suporte a PNG/JPEG e fallback gracioso
+  let hasLogoDrawn = false;
+  if (logoData) {
+    hasLogoDrawn = safeAddImage(doc, logoData, marginX, brandStartY, 28, 12);
+  }
+
+  let textBrandEndX = marginX;
+  if (!hasLogoDrawn) {
+    doc.setFillColor(colorDarkBg[0], colorDarkBg[1], colorDarkBg[2]);
+    doc.roundedRect(marginX, brandStartY, 9, 9, 2, 2, 'F');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(6.5);
+    doc.setTextColor(colorPrimaryEmerald[0], colorPrimaryEmerald[1], colorPrimaryEmerald[2]);
+    doc.text('3D', marginX + 2.5, brandStartY + 6);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(12.5);
+    doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
+    const maxNameLen = 22;
+    const cleanCompanyName = companyName.length > maxNameLen ? companyName.slice(0, maxNameLen) + '...' : companyName;
+    doc.text(cleanCompanyName, marginX + 11.5, brandStartY + 6.5);
+    textBrandEndX = marginX + 11.5 + doc.getTextWidth(cleanCompanyName);
+  } else {
+    textBrandEndX = marginX + 29;
+  }
+
+  // Badge da Oficina (posicionamento dinâmico sem colisão)
+  const badgePrecX = Math.min(orderBoxX - 30, textBrandEndX + 3);
+  doc.setFillColor(colorSoftTeal[0], colorSoftTeal[1], colorSoftTeal[2]);
+  doc.setDrawColor(colorTealBorder[0], colorTealBorder[1], colorTealBorder[2]);
+  doc.setLineWidth(0.2);
+  doc.roundedRect(badgePrecX, brandStartY + 2, 26, 4.2, 0.8, 0.8, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(5.2);
+  doc.setTextColor(colorTealDark[0], colorTealDark[1], colorTealDark[2]);
+  doc.text('IMPRESSÃO 3D', badgePrecX + 2, brandStartY + 5);
+
+  // Subtítulo da Oficina
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(6.5);
+  doc.setTextColor(colorMutedText[0], colorMutedText[1], colorMutedText[2]);
+  const defaultTagline = business.website || business.address || 'Serviços especializados em manufatura aditiva e prototipagem 3D';
+  doc.text(defaultTagline.slice(0, 68), marginX, brandStartY + (hasLogoDrawn ? 16 : 13));
+
+  currentY = brandStartY + 25;
 
   // 3. CARDS: CLIENTE / SOLICITANTE (ESQUERDA) + PROPOSTA COMERCIAL (DIREITA - CARD ESCURO)
   const clientCardWidth = 110;
   const proposalCardWidth = contentWidth - clientCardWidth - 4; // 68mm
-  const clientCardHeight = 30;
+  const clientCardHeight = 28;
   const clientCardX = marginX;
   const proposalCardX = marginX + clientCardWidth + 4;
 
@@ -407,84 +412,89 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
   doc.setLineWidth(0.2);
   doc.roundedRect(clientCardX, currentY, clientCardWidth, clientCardHeight, 2, 2, 'FD');
 
-  // Bullet verde + Título
   doc.setFillColor(colorPrimaryEmerald[0], colorPrimaryEmerald[1], colorPrimaryEmerald[2]);
-  doc.circle(clientCardX + 5, currentY + 5, 0.9, 'F');
+  doc.circle(clientCardX + 5, currentY + 4.8, 0.9, 'F');
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(6.8);
   doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
-  doc.text('CLIENTE / SOLICITANTE', clientCardX + 8, currentY + 5.8);
+  doc.text('CLIENTE / SOLICITANTE', clientCardX + 8, currentY + 5.5);
 
-  // Badge "SOLICITANTE REGISTRADO"
   const verBadgeText = 'CONTATO REGISTRADO';
   const verBadgeWidth = doc.getTextWidth(verBadgeText) + 4;
   doc.setFillColor(colorSoftTeal[0], colorSoftTeal[1], colorSoftTeal[2]);
   doc.setDrawColor(colorTealBorder[0], colorTealBorder[1], colorTealBorder[2]);
   doc.roundedRect(clientCardX + clientCardWidth - verBadgeWidth - 4, currentY + 2.5, verBadgeWidth, 4.2, 0.8, 0.8, 'FD');
   doc.setTextColor(colorTealDark[0], colorTealDark[1], colorTealDark[2]);
-  doc.setFontSize(5.5);
-  doc.text(verBadgeText, clientCardX + clientCardWidth - verBadgeWidth - 2, currentY + 5.5);
+  doc.setFontSize(5.2);
+  doc.text(verBadgeText, clientCardX + clientCardWidth - verBadgeWidth - 2, currentY + 5.3);
 
-  // Dados do Cliente (Nome e Telefone conforme pedido)
   const custName = customer?.name || 'Cliente Balcão';
   const custPhone = customer?.phone || 'Não informado';
 
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(6);
+  doc.setFontSize(5.5);
   doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
-  doc.text('NOME DO CLIENTE:', clientCardX + 5, currentY + 12);
-  doc.text('TELEFONE / WHATSAPP:', clientCardX + 60, currentY + 12);
+  doc.text('NOME DO CLIENTE:', clientCardX + 5, currentY + 11.5);
+  doc.text('TELEFONE / WHATSAPP:', clientCardX + 58, currentY + 11.5);
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8.5);
   doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
-  const trimmedCustName = custName.length > 28 ? custName.slice(0, 28) + '...' : custName;
-  doc.text(trimmedCustName, clientCardX + 5, currentY + 18.5);
+  const trimmedCustName = custName.length > 26 ? custName.slice(0, 26) + '...' : custName;
+  doc.text(trimmedCustName, clientCardX + 5, currentY + 16.5);
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8.5);
   doc.setTextColor(colorTealDark[0], colorTealDark[1], colorTealDark[2]);
-  doc.text(custPhone, clientCardX + 60, currentY + 18.5);
+  doc.text(custPhone, clientCardX + 58, currentY + 16.5);
+
+  const custEmail = customer?.email || '';
+  const custNotes = customer?.notes || '';
+  let subCustInfo = '';
+  if (custEmail) subCustInfo += `Email: ${custEmail}`;
+  if (custNotes) subCustInfo += (subCustInfo ? '  •  ' : '') + `Obs: ${custNotes}`;
+
+  if (subCustInfo) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(5.2);
+    doc.setTextColor(colorMutedText[0], colorMutedText[1], colorMutedText[2]);
+    doc.text(subCustInfo.slice(0, 78), clientCardX + 5, currentY + 22.5);
+  }
 
   // 3.2 Card Proposta Comercial / Pedido (Card Escuro Industrial #0B0F19)
   doc.setFillColor(colorDarkBg[0], colorDarkBg[1], colorDarkBg[2]);
   doc.roundedRect(proposalCardX, currentY, proposalCardWidth, clientCardHeight, 2, 2, 'F');
 
-  // Cabeçalho da Proposta
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(6);
   doc.setTextColor(colorPrimaryEmerald[0], colorPrimaryEmerald[1], colorPrimaryEmerald[2]);
-  doc.text(showPaymentInfo ? 'ORDEM DE PRODUÇÃO' : 'PROPOSTA COMERCIAL', proposalCardX + 5, currentY + 5.5);
+  doc.text(showPaymentInfo ? 'ORDEM DE PRODUÇÃO' : 'PROPOSTA TÉCNICA', proposalCardX + 5, currentY + 5.5);
 
-  // Título "ORÇAMENTO COMERCIAL" / "PEDIDO DE PRODUÇÃO"
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(10.5);
+  doc.setFontSize(9.5);
   doc.setTextColor(255, 255, 255);
-  doc.text(showPaymentInfo ? 'PEDIDO DE PRODUÇÃO' : 'ORÇAMENTO DE PRODUÇÃO', proposalCardX + 5, currentY + 11.5);
+  doc.text(showPaymentInfo ? 'PEDIDO DE PRODUÇÃO' : 'ORÇAMENTO COMERCIAL', proposalCardX + 5, currentY + 11);
 
-  // Descrição
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(5.5);
+  doc.setFontSize(5.2);
   doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
   const descTech = showPaymentInfo
-    ? 'Pedido aprovado para fabricação aditiva sob demanda dos itens listados conforme projeto e parâmetros validados.'
-    : 'Proposta comercial para fabricação aditiva sob demanda dos itens listados conforme projeto.';
-  const descLines = doc.splitTextToSize(descTech, proposalCardWidth - 10);
-  doc.text(descLines, proposalCardX + 5, currentY + 16);
+    ? 'Fabricação aditiva sob demanda conforme parâmetros validados.'
+    : 'Proposta comercial para fabricação aditiva conforme projeto.';
+  doc.text(descTech, proposalCardX + 5, currentY + 16);
 
-  // Linha vertical verde esmeralda + citação
   doc.setDrawColor(colorPrimaryEmerald[0], colorPrimaryEmerald[1], colorPrimaryEmerald[2]);
   doc.setLineWidth(0.8);
-  doc.line(proposalCardX + 5, currentY + 21, proposalCardX + 5, currentY + 26.5);
+  doc.line(proposalCardX + 5, currentY + 19, proposalCardX + 5, currentY + 24.5);
 
   doc.setFont('helvetica', 'italic');
-  doc.setFontSize(5.8);
+  doc.setFontSize(5.4);
   doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
-  const quoteLine1 = showPaymentInfo ? '"Produção autorizada com precisão e' : '"Qualidade e atenção aos detalhes em cada';
-  const quoteLine2 = showPaymentInfo ? 'garantia de acabamento."' : 'camada."';
-  doc.text(quoteLine1, proposalCardX + 7.5, currentY + 23.2);
-  doc.text(quoteLine2, proposalCardX + 7.5, currentY + 26);
+  const quoteLine = showPaymentInfo 
+    ? '"Produção autorizada com precisão e acabamento."' 
+    : '"Precisão nos detalhes e qualidade em cada camada."';
+  doc.text(quoteLine, proposalCardX + 7.5, currentY + 22.5);
 
   currentY += clientCardHeight + 5;
 
@@ -496,7 +506,6 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
   const sectionTitle = '01. DISCRIMINAÇÃO DOS ITENS E SERVIÇOS';
   doc.text(sectionTitle, marginX, currentY + 3.5);
 
-  // Badge "X ITENS" em teal
   const valItemsText = `${itemsCount} ${itemsCount === 1 ? 'ITEM' : 'ITENS'}`;
   const valItemsWidth = doc.getTextWidth(valItemsText) + 4;
   const badgeValX = marginX + doc.getTextWidth(sectionTitle) + 3;
@@ -508,7 +517,6 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
   doc.setTextColor(colorTealDark[0], colorTealDark[1], colorTealDark[2]);
   doc.text(valItemsText, badgeValX + 2, currentY + 3.2);
 
-  // Moeda à direita
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(6.2);
   doc.setTextColor(colorMutedText[0], colorMutedText[1], colorMutedText[2]);
@@ -517,37 +525,52 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
 
   currentY += 5.5;
 
-  // Cabeçalho da Tabela (FUNDO PRETO / DARK SLATE COM TEXTO BRANCO)
-  const tableHeaderHeight = 6.5;
-  doc.setFillColor(colorDarkBg[0], colorDarkBg[1], colorDarkBg[2]);
-  doc.roundedRect(marginX, currentY, contentWidth, tableHeaderHeight, 1.2, 1.2, 'F');
-
+  // Colunas da Tabela
   const colRefX = marginX + 3;
-  const colDescX = marginX + 16;
-  const colQtyX = marginX + 120;
-  const colUnitX = marginX + 140;
-  const colTotalX = marginX + 163;
+  const colDescX = marginX + 14;
+  const colQtyX = marginX + 124;
+  const colUnitX = marginX + 144;
+  const colTotalX = marginX + 164;
 
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(6);
-  doc.setTextColor(255, 255, 255);
-  doc.text('REF', colRefX, currentY + 4.5);
-  doc.text('ESPECIFICAÇÃO DO PRODUTO & PARÂMETROS DE PRODUÇÃO', colDescX, currentY + 4.5);
-  doc.text('QTD', colQtyX, currentY + 4.5);
-  doc.text('UNITÁRIO', colUnitX, currentY + 4.5);
-  doc.text('TOTAL', colTotalX, currentY + 4.5);
+  const renderTableHeader = (y: number) => {
+    const tableHeaderHeight = 6.5;
+    doc.setFillColor(colorDarkBg[0], colorDarkBg[1], colorDarkBg[2]);
+    doc.roundedRect(marginX, y, contentWidth, tableHeaderHeight, 1.2, 1.2, 'F');
 
-  currentY += tableHeaderHeight;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(6);
+    doc.setTextColor(255, 255, 255);
+    doc.text('REF', colRefX, y + 4.5);
+    doc.text('ESPECIFICAÇÃO DO PRODUTO & PARÂMETROS DE PRODUÇÃO', colDescX, y + 4.5);
+    doc.text('QTD', colQtyX, y + 4.5);
+    doc.text('UNITÁRIO', colUnitX, y + 4.5);
+    doc.text('TOTAL', colTotalX, y + 4.5);
+    return y + tableHeaderHeight;
+  };
 
-  // Linhas de Itens com Foto Ampliada (31mm x 31mm)
+  currentY = renderTableHeader(currentY);
+
+  // Linhas de Itens
   const items = order.items || [];
-  const rowHeight = 36; // Altura para acomodar foto 31mm
+  const rowHeight = 23;
+  const imgSize = 18;
 
   items.forEach((item, index) => {
     // Quebra de página se necessário
-    if (currentY + rowHeight > pageHeight - 55) {
+    if (currentY + rowHeight > pageHeight - 65) {
       doc.addPage();
-      currentY = 15;
+      currentY = 14;
+      
+      // Top bar de continuação
+      doc.setFillColor(colorPrimaryEmerald[0], colorPrimaryEmerald[1], colorPrimaryEmerald[2]);
+      doc.rect(marginX, currentY - 2.2, 2.2, 2.2, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(6.5);
+      doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
+      doc.text(`${showPaymentInfo ? 'ORDEM DE PRODUÇÃO' : 'ORÇAMENTO'} ${orderNumStr} (CONTINUAÇÃO)`, marginX + 4, currentY - 0.5);
+      
+      currentY += 4;
+      currentY = renderTableHeader(currentY);
     }
 
     const part = parts.find(p => p.id === item.partId);
@@ -567,14 +590,13 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
 
     // Referência do Item (#01, #02)
     doc.setFont('courier', 'bold');
-    doc.setFontSize(8.5);
+    doc.setFontSize(8);
     doc.setTextColor(colorMutedText[0], colorMutedText[1], colorMutedText[2]);
-    doc.text(refNum, colRefX, currentY + 19);
+    doc.text(refNum, colRefX, currentY + 12.5);
 
-    // Foto Ampliada (31mm x 31mm) com renderização segura
+    // Foto (18mm x 18mm)
     const imgX = colDescX;
     const imgY = currentY + 2.5;
-    const imgSize = 31;
     let hasImageDrawn = false;
 
     if (part?.imageUrl && itemImages[part.imageUrl]) {
@@ -584,43 +606,60 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
     if (!hasImageDrawn) {
       doc.setFillColor(248, 250, 252);
       doc.setDrawColor(colorBorder[0], colorBorder[1], colorBorder[2]);
-      doc.roundedRect(imgX, imgY, imgSize, imgSize, 1.5, 1.5, 'FD');
+      doc.roundedRect(imgX, imgY, imgSize, imgSize, 1.2, 1.2, 'FD');
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(7.5);
+      doc.setFontSize(6);
       doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
-      doc.text('FOTO 3D', imgX + 8, imgY + 17);
+      doc.text('FOTO 3D', imgX + 3.5, imgY + 10);
     }
 
-    // Nome da Peça (Apenas o nome limpo e destacado, sem FDM, sem badges e sem descrições técnicas)
-    const textDescX = imgX + imgSize + 6;
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(10.5);
-    doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
-    const maxTitleLen = 45;
-    const cleanTitle = itemTitle.length > maxTitleLen ? itemTitle.slice(0, maxTitleLen) + '...' : itemTitle;
-    doc.text(cleanTitle, textDescX, currentY + 18.5);
-
-    // Quantidade
+    // Título da Peça com largura estritamente limitada para NUNCA invadir as colunas de preço
+    const textDescX = imgX + imgSize + 4;
+    const maxTitleW = colQtyX - textDescX - 3; // ~83mm de largura garantida
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(9);
     doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
-    doc.text(qtyStr, colQtyX, currentY + 18);
+
+    const titleLines = doc.splitTextToSize(itemTitle, maxTitleW);
+    const dispTitleLines = titleLines.slice(0, 2);
+
+    if (dispTitleLines.length === 1) {
+      doc.text(dispTitleLines[0], textDescX, currentY + 10.5);
+    } else {
+      doc.text(dispTitleLines[0], textDescX, currentY + 8.5);
+      doc.text(dispTitleLines[1], textDescX, currentY + 12.5);
+    }
+
+    // Informação de material ou categoria se disponível
+    const matInfo = part?.material || part?.category || '';
+    if (matInfo) {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(5.5);
+      doc.setTextColor(colorMutedText[0], colorMutedText[1], colorMutedText[2]);
+      doc.text(`Material / Linha: ${matInfo}`, textDescX, currentY + 17.5);
+    }
+
+    // Quantidade
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.5);
+    doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
+    doc.text(qtyStr, colQtyX, currentY + 12.5);
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(6.5);
+    doc.setFontSize(6);
     doc.setTextColor(colorMutedText[0], colorMutedText[1], colorMutedText[2]);
-    doc.text('un', colQtyX + doc.getTextWidth(qtyStr) + 1.5, currentY + 18);
+    doc.text('un', colQtyX + doc.getTextWidth(qtyStr) + 1.5, currentY + 12.5);
 
     // Unitário
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8);
     doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
-    doc.text(unitPriceStr, colUnitX, currentY + 18);
+    doc.text(unitPriceStr, colUnitX, currentY + 12.5);
 
     // Total
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(9);
+    doc.setFontSize(8.5);
     doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
-    doc.text(totalPriceStr, colTotalX, currentY + 18);
+    doc.text(totalPriceStr, colTotalX, currentY + 12.5);
 
     currentY += rowHeight;
   });
@@ -628,15 +667,26 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
   currentY += 4;
 
   // 5. BLOCO FINAL: CONDIÇÕES TÉCNICAS (ESQUERDA) vs RESUMO FINANCEIRO (DIREITA - CARD ESCURO)
-  const bottomBoxHeight = 44;
+  const bottomBoxHeight = 42;
   const condWidth = 110;
   const financeWidth = contentWidth - condWidth - 4; // 68mm
   const condX = marginX;
   const financeX = marginX + condWidth + 4;
 
-  if (currentY + bottomBoxHeight > pageHeight - 20) {
+  // Garante que o bloco final e o Pix/Termo caibam na folha ou saltem limpos para a próxima
+  const remainingNeeded = bottomBoxHeight + (showPaymentInfo ? 31 : 28) + 16;
+  if (currentY + remainingNeeded > pageHeight) {
     doc.addPage();
-    currentY = 15;
+    currentY = 16;
+    
+    // Top bar de continuação
+    doc.setFillColor(colorPrimaryEmerald[0], colorPrimaryEmerald[1], colorPrimaryEmerald[2]);
+    doc.rect(marginX, currentY - 2.2, 2.2, 2.2, 'F');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(6.5);
+    doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
+    doc.text(`${showPaymentInfo ? 'ORDEM DE PRODUÇÃO' : 'ORÇAMENTO'} ${orderNumStr} - CONDIÇÕES & PAGAMENTO`, marginX + 4, currentY - 0.5);
+    currentY += 5;
   }
 
   // 5.1 Card Condições Técnicas e Fabricação (Fundo Claro)
@@ -644,14 +694,13 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
   doc.setDrawColor(colorBorder[0], colorBorder[1], colorBorder[2]);
   doc.roundedRect(condX, currentY, condWidth, bottomBoxHeight, 2, 2, 'FD');
 
-  // Bullet verde + Título
   doc.setFillColor(colorPrimaryEmerald[0], colorPrimaryEmerald[1], colorPrimaryEmerald[2]);
-  doc.circle(condX + 5, currentY + 5, 0.9, 'F');
+  doc.circle(condX + 5, currentY + 4.8, 0.9, 'F');
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(6.8);
   doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
-  doc.text('CONDIÇÕES TÉCNICAS E FORNECIMENTO', condX + 8, currentY + 5.8);
+  doc.text('CONDIÇÕES TÉCNICAS E FORNECIMENTO', condX + 8, currentY + 5.5);
 
   const termBadge = 'CONDIÇÕES GERAIS';
   doc.setFont('courier', 'bold');
@@ -659,9 +708,8 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
   doc.setTextColor(colorMutedText[0], colorMutedText[1], colorMutedText[2]);
   doc.text(termBadge, condX + condWidth - doc.getTextWidth(termBadge) - 4, currentY + 5.5);
 
-  // Grid Condições Técnicas
-  const gridY1 = currentY + 10;
-  const gridY2 = currentY + 19.5;
+  const gridY1 = currentY + 9;
+  const gridY2 = currentY + 18.5;
 
   // Box 1: Prazo
   doc.setFillColor(255, 255, 255);
@@ -672,24 +720,24 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(5);
   doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
-  doc.text('PRAZO DE FABRICAÇÃO:', condX + 6, gridY1 + 3);
+  doc.text('PRAZO DE FABRICAÇÃO:', condX + 6, gridY1 + 2.8);
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(6.8);
+  doc.setFontSize(6.5);
   doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
-  doc.text('A combinar c/ cliente', condX + 6, gridY1 + 6.5);
+  doc.text('A combinar c/ cliente', condX + 6, gridY1 + 6.2);
 
-  // Box 2: Condição Comercial / Situação do Pedido
+  // Box 2: Condição Comercial
   doc.setFillColor(255, 255, 255);
   doc.roundedRect(condX + 55, gridY1, 51, 8, 1, 1, 'FD');
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(5);
   doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
-  doc.text(showPaymentInfo ? 'SITUAÇÃO DO PEDIDO:' : 'CONDIÇÃO COMERCIAL:', condX + 57, gridY1 + 3);
+  doc.text(showPaymentInfo ? 'SITUAÇÃO DO PEDIDO:' : 'CONDIÇÃO COMERCIAL:', condX + 57, gridY1 + 2.8);
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(6.8);
+  doc.setFontSize(6.5);
   doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
-  doc.text(showPaymentInfo ? (isPaid ? 'Pago / Quitado' : 'Aprovado / Em Produção') : 'Sujeita à Aprovação', condX + 57, gridY1 + 6.5);
+  doc.text(showPaymentInfo ? (isPaid ? 'Pago / Quitado' : 'Aprovado / Em Produção') : 'Sujeita à Aprovação', condX + 57, gridY1 + 6.2);
 
   // Box 3: Envio / Logística
   doc.setFillColor(255, 255, 255);
@@ -698,33 +746,32 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(5);
   doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
-  doc.text('ENVIO / LOGÍSTICA:', condX + 6, gridY2 + 3);
+  doc.text('ENVIO / LOGÍSTICA:', condX + 6, gridY2 + 2.8);
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(6.8);
+  doc.setFontSize(6.5);
   doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
-  doc.text('A combinar (Retirada ou Envio)', condX + 6, gridY2 + 6.5);
+  doc.text('A combinar (Retirada ou Envio)', condX + 6, gridY2 + 6.2);
 
   // Nota de Manufatura
-  const noteY = currentY + 30.5;
+  const noteY = currentY + 28.5;
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(5.5);
+  doc.setFontSize(5.2);
   doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
   doc.text('NOTA DE MANUFATURA:', condX + 4, noteY);
 
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(5.5);
+  doc.setFontSize(5.2);
   doc.setTextColor(colorMutedText[0], colorMutedText[1], colorMutedText[2]);
   const noteLines = doc.splitTextToSize(
-    'Peças fabricadas sob demanda conforme arquivo digital e orientações do cliente. Linhas e texturas superficiais são características próprias do processo de impressão 3D.',
+    'Peças fabricadas sob demanda conforme arquivo digital validado. Linhas e texturas superficiais são características próprias do processo de impressão 3D (FDM/FFF).',
     condWidth - 8
   );
-  doc.text(noteLines, condX + 4, noteY + 3.5);
+  doc.text(noteLines, condX + 4, noteY + 3.2);
 
   // 5.2 Card Resumo Financeiro (FUNDO PRETO INDUSTRIAL #0B0F19)
   doc.setFillColor(colorDarkBg[0], colorDarkBg[1], colorDarkBg[2]);
   doc.roundedRect(financeX, currentY, financeWidth, bottomBoxHeight, 2, 2, 'F');
 
-  // Título em Verde Esmeralda
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7);
   doc.setTextColor(colorPrimaryEmerald[0], colorPrimaryEmerald[1], colorPrimaryEmerald[2]);
@@ -732,24 +779,17 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
 
   const quoteTagRight = `${showPaymentInfo ? 'PEDIDO' : 'PROPOSTA'} ${orderNumStr}`;
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(5.5);
+  doc.setFontSize(5.2);
   doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
   doc.text(quoteTagRight, financeX + financeWidth - doc.getTextWidth(quoteTagRight) - 5, currentY + 5.5);
 
-  // Cálculo financeiro estrito sem padrão || incorreto
-  const subtotal = (order.items || []).reduce(
-    (acc, i) => acc + ((Number(i.unitPrice) || 0) * (Number(i.quantity) || 0)), 
-    0
-  );
-  const discount = Math.max(0, Number(order.discount) || 0);
-  const total = (typeof order.totalValue === 'number' && !isNaN(order.totalValue))
-    ? order.totalValue
-    : Math.max(0, subtotal - discount);
+  const subtotal = subtotalCalc;
+  const discount = discountCalc;
+  const total = orderTotalVal;
 
-  // Subtotal
   let finY = currentY + 11;
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7);
+  doc.setFontSize(6.5);
   doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
   doc.text('Subtotal dos Itens:', financeX + 5, finY);
   const subtotalStr = formatCurrency(subtotal);
@@ -757,8 +797,7 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
   doc.setTextColor(255, 255, 255);
   doc.text(subtotalStr, financeX + financeWidth - doc.getTextWidth(subtotalStr) - 5, finY);
 
-  // Desconto (se houver, exibe com destaque; se não houver, mostra Neutro sem inventar frete)
-  finY += 6;
+  finY += 5.5;
   if (discount > 0) {
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
@@ -777,29 +816,27 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
     doc.text(noneStr, financeX + financeWidth - doc.getTextWidth(noneStr) - 5, finY);
   }
 
-  // Linha divisória interna no card preto
   finY += 3.5;
   doc.setDrawColor(colorDarkBorder[0], colorDarkBorder[1], colorDarkBorder[2]);
   doc.setLineWidth(0.3);
   doc.line(financeX + 5, finY, financeX + financeWidth - 5, finY);
 
-  // VALOR TOTAL LÍQUIDO
-  finY += 6;
+  finY += 5.5;
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(7);
+  doc.setFontSize(6.8);
   doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
   doc.text(showPaymentInfo ? 'TOTAL DO PEDIDO:' : 'VALOR TOTAL LÍQUIDO:', financeX + 5, finY);
 
-  finY += 8.5;
+  finY += 7.5;
   const totalStr = formatCurrency(total);
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(16);
+  doc.setFontSize(14.5);
   doc.setTextColor(255, 255, 255);
   doc.text(totalStr, financeX + financeWidth - doc.getTextWidth(totalStr) - 5, finY);
 
-  finY += 4;
+  finY += 3.8;
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(5.5);
+  doc.setFontSize(5);
   doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
   const finFootNote = showPaymentInfo 
     ? (isPaid ? 'Pagamento confirmado no caixa' : 'Aguardando pagamento via Pix') 
@@ -808,24 +845,17 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
 
   currentY += bottomBoxHeight + 4;
 
-  // 5.3 SEÇÃO: DADOS PARA PAGAMENTO PIX (QUANDO APROVADO) OU TERMO INFORMATIVO (QUANDO ORÇAMENTO)
+  // 5.3 SEÇÃO: DADOS PARA PAGAMENTO PIX OU TERMO INFORMATIVO
   if (showPaymentInfo) {
     const payBoxHeight = 31;
-    if (currentY + payBoxHeight > pageHeight - 18) {
-      doc.addPage();
-      currentY = 15;
-    }
-
     const payX = marginX;
     const payWidth = contentWidth;
 
-    // Fundo do Card de Pagamento
     doc.setFillColor(colorCardBg[0], colorCardBg[1], colorCardBg[2]);
     doc.setDrawColor(colorTealBorder[0], colorTealBorder[1], colorTealBorder[2]);
     doc.setLineWidth(0.3);
     doc.roundedRect(payX, currentY, payWidth, payBoxHeight, 2, 2, 'FD');
 
-    // Bullet verde + Título
     doc.setFillColor(colorPrimaryEmerald[0], colorPrimaryEmerald[1], colorPrimaryEmerald[2]);
     doc.circle(payX + 5, currentY + 4.8, 0.9, 'F');
 
@@ -847,14 +877,13 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
 
     let contentStartX = payX + 5;
     if (pixData?.qrCodeDataUrl) {
-      // Desenha QR Code no lado esquerdo do card
-      const qrSize = 21;
-      const qrY = currentY + 8;
+      const qrSize = 20;
+      const qrY = currentY + 7.5;
       doc.setFillColor(255, 255, 255);
       doc.setDrawColor(colorBorder[0], colorBorder[1], colorBorder[2]);
-      doc.roundedRect(payX + 4, qrY - 0.8, qrSize + 1.6, qrSize + 1.6, 1, 1, 'FD');
-      safeAddImage(doc, pixData.qrCodeDataUrl, payX + 4.8, qrY, qrSize, qrSize);
-      contentStartX = payX + qrSize + 9;
+      doc.roundedRect(payX + 4, qrY - 0.6, qrSize + 1.2, qrSize + 1.2, 1, 1, 'FD');
+      safeAddImage(doc, pixData.qrCodeDataUrl, payX + 4.6, qrY, qrSize, qrSize);
+      contentStartX = payX + qrSize + 8;
     }
 
     // Linha 1: Chave Pix
@@ -862,17 +891,17 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(5.5);
     doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
-    doc.text(`CHAVE PIX (${keyTypeStr.toUpperCase()}):`, contentStartX, currentY + 11);
+    doc.text(`CHAVE PIX (${keyTypeStr.toUpperCase()}):`, contentStartX, currentY + 10.5);
 
     doc.setFont('courier', 'bold');
-    doc.setFontSize(8.5);
+    doc.setFontSize(8);
     doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
     const cleanPixKeyStr = pixData?.formattedKey || business.pixKey || 'Chave Pix a combinar com a oficina';
-    doc.text(cleanPixKeyStr, contentStartX, currentY + 15);
+    doc.text(cleanPixKeyStr, contentStartX, currentY + 14.5);
 
     // Linha 2: Favorecido e Banco
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(6);
+    doc.setFontSize(5.8);
     doc.setTextColor(colorMutedText[0], colorMutedText[1], colorMutedText[2]);
     const recName = business.pixReceiverName || companyName;
     const bankName = business.pixBank;
@@ -880,39 +909,32 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
     if (bankName) {
       bankLine += `  •  Instituição/Banco: ${bankName}`;
     }
-    doc.text(bankLine, contentStartX, currentY + 19.5);
+    doc.text(bankLine.slice(0, 95), contentStartX, currentY + 19);
 
     // Linha 3: Total e Instruções
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(6.8);
+    doc.setFontSize(6.5);
     doc.setTextColor(colorTealDark[0], colorTealDark[1], colorTealDark[2]);
-    doc.text(`Valor a Pagar: ${formatCurrency(total)}`, contentStartX, currentY + 23.5);
+    doc.text(`Valor a Pagar: ${formatCurrency(total)}`, contentStartX, currentY + 23);
 
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(5.2);
     doc.setTextColor(colorMutedText[0], colorMutedText[1], colorMutedText[2]);
     const payInstruction = 'Abra o app do seu banco, acesse Pix > Ler QR Code ou Copia e Cola com a chave acima e envie o comprovante.';
-    doc.text(payInstruction, contentStartX, currentY + 27.5);
+    doc.text(payInstruction, contentStartX, currentY + 27);
 
     currentY += payBoxHeight + 4;
   } else {
-    // Modo Orçamento Comercial Informativo (sem cobrança)
-    const termBoxHeight = 22;
-    if (currentY + termBoxHeight > pageHeight - 18) {
-      doc.addPage();
-      currentY = 15;
-    }
-
+    // Modo Orçamento Comercial Informativo
+    const termBoxHeight = 28;
     const termX = marginX;
     const termWidth = contentWidth;
 
-    // Fundo do Card de Termo Comercial com borda suave
     doc.setFillColor(colorCardBg[0], colorCardBg[1], colorCardBg[2]);
     doc.setDrawColor(colorBorder[0], colorBorder[1], colorBorder[2]);
     doc.setLineWidth(0.3);
     doc.roundedRect(termX, currentY, termWidth, termBoxHeight, 2, 2, 'FD');
 
-    // Indicador visual
     doc.setFillColor(colorPrimaryEmerald[0], colorPrimaryEmerald[1], colorPrimaryEmerald[2]);
     doc.circle(termX + 5, currentY + 4.8, 0.9, 'F');
 
@@ -926,14 +948,15 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
     doc.setFillColor(255, 255, 255);
     doc.setDrawColor(colorBorder[0], colorBorder[1], colorBorder[2]);
     doc.setLineWidth(0.2);
-    doc.roundedRect(termX + doc.getTextWidth('INFORMAÇÕES COMERCIAIS & SUJEIÇÃO À APROVAÇÃO') + 11, currentY + 2.5, termBadgeW, 4, 0.8, 0.8, 'FD');
+    const badgeX = termX + termWidth - termBadgeW - 4;
+    doc.roundedRect(badgeX, currentY + 2.5, termBadgeW, 4, 0.8, 0.8, 'FD');
     doc.setFont('courier', 'bold');
     doc.setFontSize(5);
     doc.setTextColor(colorTealDark[0], colorTealDark[1], colorTealDark[2]);
-    doc.text(termBadgeText, termX + doc.getTextWidth('INFORMAÇÕES COMERCIAIS & SUJEIÇÃO À APROVAÇÃO') + 13, currentY + 5.2);
+    doc.text(termBadgeText, badgeX + 2, currentY + 5.2);
 
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(5.8);
+    doc.setFontSize(5.3);
     doc.setTextColor(colorMutedText[0], colorMutedText[1], colorMutedText[2]);
     const termLines = [
       '• Este documento constitui um orçamento prévio exclusivamente comercial e informativo para apresentação dos custos do serviço.',
@@ -945,18 +968,13 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
     termLines.forEach(line => {
       const wrapped = doc.splitTextToSize(line, termWidth - 10);
       doc.text(wrapped, termX + 5, termLineY);
-      termLineY += (Array.isArray(wrapped) ? wrapped.length : 1) * 3.6;
+      termLineY += (Array.isArray(wrapped) ? wrapped.length : 1) * 3.3;
     });
 
     currentY += termBoxHeight + 4;
   }
 
-  // 6. RODAPÉ COMERCIAL
-  const footerY = pageHeight - 16;
-  doc.setDrawColor(colorBorder[0], colorBorder[1], colorBorder[2]);
-  doc.setLineWidth(0.3);
-  doc.line(marginX, footerY, pageWidth - marginX, footerY);
-
+  // 6. RENDERIZAÇÃO DO RODAPÉ EM TODAS AS PÁGINAS (PÁG 1 DE N)
   const contactParts: string[] = [companyName];
   if (business.whatsapp || business.phone) {
     contactParts.push(`WhatsApp: ${business.whatsapp || business.phone}`);
@@ -970,18 +988,34 @@ export async function buildQuotePdfDoc({ order, customer, parts, filaments, sett
   if (business.cityState) {
     contactParts.push(`${business.cityState} • Brasil`);
   }
-
   const contactFooterStr = contactParts.join('  •  ');
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(6.5);
-  doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
-  doc.text(contactFooterStr.slice(0, 110), marginX, footerY + 5);
 
-  const legalFooterStr = `"Obrigado pela oportunidade de fabricar sua ideia."  •  GERADO EM ${emissionDate}  •  HASH DE VALIDAÇÃO ELETRÔNICA: ${authHash}`;
-  doc.setFont('helvetica', 'italic');
-  doc.setFontSize(5.5);
-  doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
-  doc.text(legalFooterStr.slice(0, 125), marginX, footerY + 9.5);
+  const totalPages = doc.getNumberOfPages();
+  for (let p = 1; p <= totalPages; p++) {
+    doc.setPage(p);
+    const footerY = pageHeight - 14;
+
+    doc.setDrawColor(colorBorder[0], colorBorder[1], colorBorder[2]);
+    doc.setLineWidth(0.3);
+    doc.line(marginX, footerY, pageWidth - marginX, footerY);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.2);
+    doc.setTextColor(colorDarkText[0], colorDarkText[1], colorDarkText[2]);
+    doc.text(contactFooterStr.slice(0, 110), marginX, footerY + 4.5);
+
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(5.2);
+    doc.setTextColor(colorLightMuted[0], colorLightMuted[1], colorLightMuted[2]);
+    const legalFooterStr = `"Obrigado pela oportunidade de fabricar sua ideia."  •  EMISSÃO: ${emissionDate}  •  AUTENTICAÇÃO: ${authHash}`;
+    doc.text(legalFooterStr.slice(0, 115), marginX, footerY + 8.5);
+
+    const pageNumStr = `Pág. ${p} de ${totalPages}`;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(5.5);
+    doc.setTextColor(colorMutedText[0], colorMutedText[1], colorMutedText[2]);
+    doc.text(pageNumStr, pageWidth - marginX - doc.getTextWidth(pageNumStr), footerY + 8.5);
+  }
 
   return doc;
 }
