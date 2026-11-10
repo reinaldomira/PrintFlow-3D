@@ -380,7 +380,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
       {/* ======================================================== */}
       {/* 4. CONTEÚDO PRINCIPAL (TELA CHEIA NO MOBILE)             */}
       {/* ======================================================== */}
-      <main className="flex-1 p-3.5 sm:p-5 md:p-8 max-w-7xl mx-auto w-full">
+      <main className="flex-1 p-3.5 sm:p-5 md:p-8 max-w-7xl mx-auto w-full min-w-0 overflow-x-hidden">
         {children}
       </main>
 

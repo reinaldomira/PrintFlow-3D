@@ -1806,38 +1806,39 @@ export const Orders: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6 pb-20">
-      <div className="flex items-center justify-between">
+    <div className="space-y-6 pb-20 w-full min-w-0 max-w-full overflow-x-hidden">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
         <div>
-          <h2 className="text-2xl font-bold">Produção & Pedidos</h2>
-          <p className="text-zinc-500">Gestão de vendas, encomendas e status de entrega</p>
+          <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight">Produção & Pedidos</h2>
+          <p className="text-xs sm:text-sm text-zinc-400">Gestão de vendas, encomendas e status de entrega</p>
         </div>
-        <div className="flex items-center gap-2.5">
+        <div className="grid grid-cols-3 sm:flex sm:items-center gap-2 w-full sm:w-auto">
           <button 
             type="button"
             onClick={() => setIsQuickQuoteOpen(true)} 
-            className="bg-gradient-to-r from-emerald-500/20 to-teal-500/20 hover:from-emerald-500/30 hover:to-teal-500/30 text-emerald-300 border border-emerald-500/40 px-3.5 py-2.5 rounded-xl flex items-center gap-2 font-bold text-sm shadow-sm transition active:scale-95"
+            className="bg-gradient-to-r from-emerald-500/20 to-teal-500/20 hover:from-emerald-500/30 hover:to-teal-500/30 text-emerald-300 border border-emerald-500/40 px-2 sm:px-3.5 py-2.5 rounded-xl flex items-center justify-center gap-1.5 font-bold text-xs sm:text-sm shadow-sm transition active:scale-95"
             title="Simular Orçamento Flash para WhatsApp em segundos"
           >
-            <Zap className="w-4 h-4 text-emerald-400 fill-emerald-400" />
+            <Zap className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400 fill-emerald-400 flex-shrink-0" />
             <span className="hidden sm:inline">Orçamento Flash</span>
             <span className="sm:hidden">Flash</span>
           </button>
           <button 
             type="button"
             onClick={() => setIsPricingCalculatorOpen(true)} 
-            className="bg-zinc-800 hover:bg-zinc-700 text-zinc-100 border border-zinc-700/80 px-3.5 py-2.5 rounded-xl flex items-center gap-2 font-bold text-sm shadow-sm transition active:scale-95"
+            className="bg-zinc-800 hover:bg-zinc-700 text-zinc-100 border border-zinc-700/80 px-2 sm:px-3.5 py-2.5 rounded-xl flex items-center justify-center gap-1.5 font-bold text-xs sm:text-sm shadow-sm transition active:scale-95"
             title="Calculadora Financeira Avançada de Venda (pricingCalculator)"
           >
-            <Calculator className="w-4 h-4 text-emerald-400" />
-            <span className="hidden sm:inline">Calculadora Financeira</span>
+            <Calculator className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400 flex-shrink-0" />
+            <span className="hidden sm:inline">Calculadora</span>
             <span className="sm:hidden">Calc</span>
           </button>
           <button 
             onClick={openNewOrderModal} 
-            className="bg-emerald-500 hover:bg-emerald-400 text-zinc-950 px-4 py-2.5 rounded-xl flex items-center gap-2 font-bold shadow-lg shadow-emerald-500/20 active:scale-95 transition-all text-sm"
+            className="bg-emerald-500 hover:bg-emerald-400 text-zinc-950 px-2 sm:px-4 py-2.5 rounded-xl flex items-center justify-center gap-1.5 font-bold shadow-lg shadow-emerald-500/20 active:scale-95 transition-all text-xs sm:text-sm"
           >
-            <Plus className="w-5 h-5" /> Nova Venda
+            <Plus className="w-4 h-4 sm:w-5 sm:h-5 flex-shrink-0" />
+            <span className="truncate">Nova Venda</span>
           </button>
         </div>
       </div>
@@ -1871,21 +1872,21 @@ export const Orders: React.FC = () => {
       )}
 
       {/* Busca e Filtros */}
-      <div className="flex flex-col sm:flex-row gap-4">
-        <div className="flex-1 relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-500" />
+      <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 min-w-0">
+        <div className="flex-1 relative min-w-0">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 sm:w-5 sm:h-5 text-zinc-500" />
           <input 
             type="text" 
             placeholder="Buscar por cliente ou nome da peça..." 
-            className="w-full pl-10 pr-4 py-3 bg-zinc-900 border border-zinc-800 rounded-xl outline-none text-white text-sm focus:border-emerald-500 transition-colors"
+            className="w-full pl-9 sm:pl-10 pr-4 py-2.5 sm:py-3 bg-zinc-900 border border-zinc-800 rounded-xl outline-none text-white text-xs sm:text-sm focus:border-emerald-500 transition-colors"
             value={searchTerm} 
             onChange={e => setSearchTerm(e.target.value)}
           />
         </div>
-        <div className="flex gap-1.5 overflow-x-auto pb-1 max-w-full">
+        <div className="flex gap-1.5 overflow-x-auto pb-1 max-w-full min-w-0 custom-scrollbar">
           <button
             onClick={() => setFilterStatus('All')}
-            className={`px-3 py-2 rounded-xl text-xs font-bold border whitespace-nowrap transition-all ${
+            className={`px-3 py-2 rounded-xl text-xs font-bold border whitespace-nowrap transition-all flex-shrink-0 ${
               filterStatus === 'All' 
                 ? 'bg-emerald-500 text-zinc-950 border-emerald-400 shadow-sm' 
                 : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:bg-zinc-800'
@@ -1899,7 +1900,7 @@ export const Orders: React.FC = () => {
               <button
                 key={st.key}
                 onClick={() => setFilterStatus(st.key)}
-                className={`px-3 py-2 rounded-xl text-xs font-bold border whitespace-nowrap transition-all flex items-center gap-1.5 ${
+                className={`px-3 py-2 rounded-xl text-xs font-bold border whitespace-nowrap transition-all flex items-center gap-1.5 flex-shrink-0 ${
                   filterStatus === st.key 
                     ? 'bg-emerald-500 text-zinc-950 border-emerald-400 shadow-sm' 
                     : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:bg-zinc-800'
@@ -1935,25 +1936,25 @@ export const Orders: React.FC = () => {
             const isPaid = isOrderPaid(order);
 
             return (
-              <div key={order.id} className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden shadow-sm transition-all hover:border-zinc-700">
+              <div key={order.id} className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden shadow-sm transition-all hover:border-zinc-700 min-w-0">
                 <div 
-                  className="p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 cursor-pointer" 
+                  className="p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 sm:gap-4 cursor-pointer" 
                   onClick={() => toggleExpand(order.id)}
                 >
-                  <div className="flex items-start gap-4">
-                    <div className="w-12 h-12 bg-zinc-800/80 rounded-xl flex items-center justify-center text-zinc-400 flex-shrink-0">
-                      <ShoppingBag className="w-6 h-6 text-emerald-500" />
+                  <div className="flex items-start gap-3 sm:gap-4 min-w-0">
+                    <div className="w-10 h-10 sm:w-12 sm:h-12 bg-zinc-800/80 rounded-xl flex items-center justify-center text-zinc-400 flex-shrink-0">
+                      <ShoppingBag className="w-5 h-5 sm:w-6 sm:h-6 text-emerald-500" />
                     </div>
-                    <div>
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <h3 className="font-bold text-base text-zinc-100">{customer?.name || 'Cliente Balcão'}</h3>
-                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400 font-mono">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                        <h3 className="font-bold text-sm sm:text-base text-zinc-100 truncate">{customer?.name || 'Cliente Balcão'}</h3>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400 font-mono flex-shrink-0">
                           {order.paymentMethod || 'Pix'}
                         </span>
                         
                         {/* Botão de Status de Pagamento (Orçamentos não possuem cobrança pendente) */}
                         {normalizeOrderStatus(order.status) === OrderStatus.PENDING ? (
-                          <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full border bg-amber-500/10 text-amber-300 border-amber-500/30 flex items-center gap-1" title="Orçamento Comercial Informativo (Sujeito à Aprovação)">
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border bg-amber-500/10 text-amber-300 border-amber-500/30 flex items-center gap-1 flex-shrink-0" title="Orçamento Comercial Informativo (Sujeito à Aprovação)">
                             <FileText className="w-3 h-3 text-amber-400" />
                             <span>Orçamento</span>
                           </span>
@@ -1962,7 +1963,7 @@ export const Orders: React.FC = () => {
                             type="button"
                             onClick={(e) => handleTogglePaymentStatus(order, e)}
                             title={isPaid ? "Pagamento Confirmado (Em Caixa). Clique para marcar como Aguardando." : "Aguardando Pagamento do Cliente (A Receber). Clique para confirmar recebimento."}
-                            className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border flex items-center gap-1 transition-all active:scale-95 ${
+                            className={`text-[10px] font-bold px-2 py-0.5 rounded-full border flex items-center gap-1 transition-all active:scale-95 flex-shrink-0 ${
                               isPaid
                                 ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/25'
                                 : 'bg-amber-500/15 text-amber-300 border-amber-500/30 hover:bg-emerald-500/20 hover:text-emerald-300 hover:border-emerald-500/40'
@@ -1982,7 +1983,7 @@ export const Orders: React.FC = () => {
                           </button>
                         )}
 
-                        <span className="text-[10px] font-bold text-zinc-500 uppercase">
+                        <span className="text-[10px] font-bold text-zinc-500 uppercase flex-shrink-0">
                           #{order.id.slice(0, 5)}
                         </span>
                       </div>
@@ -1993,88 +1994,90 @@ export const Orders: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3 justify-between md:justify-end flex-wrap">
-                    <div className="text-right">
+                  <div className="flex items-center gap-2 sm:gap-3 justify-between md:justify-end flex-wrap pt-2.5 md:pt-0 border-t border-zinc-800/60 md:border-t-0">
+                    <div className="text-left md:text-right">
                       {order.discount > 0 && (
                         <p className="text-[10px] text-zinc-500 line-through">
                           {formatCurrency(order.totalValue + order.discount)}
                         </p>
                       )}
-                      <span className="text-xl font-black text-emerald-500">{formatCurrency(order.totalValue)}</span>
+                      <span className="text-lg sm:text-xl font-black text-emerald-500">{formatCurrency(order.totalValue)}</span>
                       {normalizeOrderStatus(order.status) === OrderStatus.PENDING ? (
-                        <p className="text-[10px] text-zinc-500 mt-0.5 flex items-center justify-end gap-1">
+                        <p className="text-[10px] text-zinc-500 mt-0.5 flex items-center justify-start md:justify-end gap-1">
                           <span>📋 Sem cobrança</span>
                         </p>
                       ) : (
-                        <p className={`text-[10px] font-bold mt-0.5 flex items-center justify-end gap-1 ${isPaid ? 'text-emerald-400' : 'text-amber-400'}`}>
+                        <p className={`text-[10px] font-bold mt-0.5 flex items-center justify-start md:justify-end gap-1 ${isPaid ? 'text-emerald-400' : 'text-amber-400'}`}>
                           {isPaid ? '✓ Em Caixa' : '⏳ A Receber'}
                         </p>
                       )}
                     </div>
 
-                    {/* Mudança de Status Rápida com emojis e labels de fábrica */}
-                    <select 
-                      className={`px-3 py-2 rounded-xl border text-xs font-bold cursor-pointer transition-colors ${getStatusColor(order.status)}`}
-                      value={normalizeOrderStatus(order.status)} 
-                      onClick={e => e.stopPropagation()}
-                      onChange={e => handleStatusChangeRequest(order, e.target.value as OrderStatus)}
-                    >
-                      {STATUS_LIST.map(st => (
-                        <option key={st.key} value={st.key} className="bg-zinc-900 text-zinc-100">
-                          {st.emoji} {st.label}
-                        </option>
-                      ))}
-                    </select>
-
-                    {/* Ações Rápidas */}
-                    <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
-                      <button 
-                        onClick={() => setQuoteModalOrder(order)} 
-                        title={normalizeOrderStatus(order.status) === OrderStatus.PENDING 
-                          ? "Gerar Orçamento Oficial em PDF (Informativo)" 
-                          : "Gerar Pedido em PDF (com Dados de Pagamento Pix)"}
-                        className="p-2 bg-blue-500/10 text-blue-400 hover:bg-blue-600 hover:text-white rounded-lg transition-colors flex items-center gap-1 font-bold text-xs"
+                    <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap ml-auto md:ml-0">
+                      {/* Mudança de Status Rápida com emojis e labels de fábrica */}
+                      <select 
+                        className={`px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl border text-xs font-bold cursor-pointer transition-colors max-w-[135px] sm:max-w-none truncate ${getStatusColor(order.status)}`}
+                        value={normalizeOrderStatus(order.status)} 
+                        onClick={e => e.stopPropagation()}
+                        onChange={e => handleStatusChangeRequest(order, e.target.value as OrderStatus)}
                       >
-                        <FileText className="w-4 h-4" />
-                        <span className="hidden sm:inline text-[11px]">PDF</span>
-                      </button>
+                        {STATUS_LIST.map(st => (
+                          <option key={st.key} value={st.key} className="bg-zinc-900 text-zinc-100">
+                            {st.emoji} {st.label}
+                          </option>
+                        ))}
+                      </select>
 
-                      <button 
-                        onClick={() => sendWhatsAppMessage(order)} 
-                        title="Enviar comprovante no WhatsApp"
-                        className="p-2 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500 hover:text-zinc-950 rounded-lg transition-colors"
-                      >
-                        <MessageCircle className="w-4 h-4" />
-                      </button>
+                      {/* Ações Rápidas */}
+                      <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                        <button 
+                          onClick={() => setQuoteModalOrder(order)} 
+                          title={normalizeOrderStatus(order.status) === OrderStatus.PENDING 
+                            ? "Gerar Orçamento Oficial em PDF (Informativo)" 
+                            : "Gerar Pedido em PDF (com Dados de Pagamento Pix)"}
+                          className="p-1.5 sm:p-2 bg-blue-500/10 text-blue-400 hover:bg-blue-600 hover:text-white rounded-lg transition-colors flex items-center gap-1 font-bold text-xs"
+                        >
+                          <FileText className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                          <span className="hidden sm:inline text-[11px]">PDF</span>
+                        </button>
 
-                      <button 
-                        onClick={() => setReceiptOrder(order)} 
-                        title="Ver Comprovante / Cupom"
-                        className="p-2 bg-zinc-800 text-zinc-300 hover:text-white rounded-lg transition-colors"
-                      >
-                        <PrinterIcon className="w-4 h-4" />
-                      </button>
+                        <button 
+                          onClick={() => sendWhatsAppMessage(order)} 
+                          title="Enviar comprovante no WhatsApp"
+                          className="p-1.5 sm:p-2 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500 hover:text-zinc-950 rounded-lg transition-colors"
+                        >
+                          <MessageCircle className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                        </button>
 
-                      <button 
-                        onClick={() => openEditOrderModal(order)} 
-                        title="Editar Pedido"
-                        className="p-2 bg-zinc-800 text-zinc-300 hover:text-white rounded-lg transition-colors"
-                      >
-                        <Edit2 className="w-4 h-4" />
-                      </button>
+                        <button 
+                          onClick={() => setReceiptOrder(order)} 
+                          title="Ver Comprovante / Cupom"
+                          className="p-1.5 sm:p-2 bg-zinc-800 text-zinc-300 hover:text-white rounded-lg transition-colors"
+                        >
+                          <PrinterIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                        </button>
 
-                      <button 
-                        type="button"
-                        onClick={(e) => requestDeleteOrder(order, e)} 
-                        title="Excluir Pedido"
-                        className="p-2 text-zinc-600 hover:text-red-500 rounded-lg transition-colors hover:bg-red-500/10"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
+                        <button 
+                          onClick={() => openEditOrderModal(order)} 
+                          title="Editar Pedido"
+                          className="p-1.5 sm:p-2 bg-zinc-800 text-zinc-300 hover:text-white rounded-lg transition-colors"
+                        >
+                          <Edit2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                        </button>
 
-                    <div className="text-zinc-500 pl-1">
-                      {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                        <button 
+                          type="button"
+                          onClick={(e) => requestDeleteOrder(order, e)} 
+                          title="Excluir Pedido"
+                          className="p-1.5 sm:p-2 text-zinc-600 hover:text-red-500 rounded-lg transition-colors hover:bg-red-500/10"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                        </button>
+                      </div>
+
+                      <div className="text-zinc-500 pl-0.5">
+                        {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -3347,7 +3350,7 @@ export const Orders: React.FC = () => {
                     >
                       <div className="flex items-center justify-between flex-wrap gap-2">
                         {/* Item Info (Filamento ou Insumo) */}
-                        <div className="flex items-center gap-2.5 min-w-[180px]">
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
                           {isSupply ? (
                             <div className="w-8 h-8 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 flex-shrink-0">
                               <PackageCheck className="w-4 h-4" />
